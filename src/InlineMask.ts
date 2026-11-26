@@ -39,16 +39,19 @@ export function copyInlineCodes(runs: InlineRuns, source: string): void {
   for (let i = 0; i < source.length;) {
     const code = source.charCodeAt(i);
     if (code === 42 || code === 95 || code === 126) {
-      const start = i++;
-      while (source.charCodeAt(i) === code) i++;
-      codes.fill(code, start, i);
-      raw.fill(code, start, i);
-      ends.fill(i, start, i);
+      const start = i;
+      do {
+        codes[i] = raw[i] = code;
+        i++;
+      } while (source.charCodeAt(i) === code);
+      ends[start] = i;
+      for (let pos = start + 1; pos < i; pos++) ends[pos] = i;
       addInlineRun(runs, start, i, code);
     } else {
       codes[i] = raw[i] = code;
       if (eventCode[code]) {
-        nextEvent.fill(i, eventStart, i + 1);
+        if (i === eventStart) nextEvent[i] = i;
+        else nextEvent.fill(i, eventStart, i + 1);
         eventStart = i + 1;
         if (code === 41) {
           nextParen.fill(i, parenStart, i + 1);
