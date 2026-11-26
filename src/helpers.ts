@@ -378,6 +378,7 @@ export interface InlineRuns {
   gfm: boolean;
   source: string;
   masks: number[];
+  share: boolean;
 }
 
 export function inlineRunAt(runs: InlineRuns, offset: number): number {
@@ -389,6 +390,23 @@ export function inlineRunAt(runs: InlineRuns, offset: number): number {
     else end = middle;
   }
   return first * 5;
+}
+
+export function scanWindowHints(runs: InlineRuns, start: number, end: number, hints: CloserHints): void {
+  hints.star = -1;
+  hints.underscore = -1;
+  hints.tilde = -1;
+  const entries = runs.entries;
+  for (let i = inlineRunAt(runs, end) - 5; i >= 0 && entries[i] > start; i -= 5) {
+    const offset = entries[i];
+    const prev = runs.source.charCodeAt(offset - 1);
+    if (prev === 32 || prev === 9 || prev === 10 || prev === 13 || prev === 12) continue;
+    const code = entries[i + 2];
+    if (code === 42 && hints.star < 0) hints.star = offset;
+    else if (code === 95 && hints.underscore < 0) hints.underscore = offset;
+    else if (code === 126 && hints.tilde < 0) hints.tilde = offset;
+    if (hints.star >= 0 && hints.underscore >= 0 && hints.tilde >= 0) break;
+  }
 }
 
 function addInlineRun(runs: InlineRuns, src: string, start: number, end: number, code: number, before: number, after: number) {

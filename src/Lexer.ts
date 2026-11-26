@@ -4,7 +4,7 @@ import { _Tokenizer } from './Tokenizer.ts';
 import { _defaults } from './defaults.ts';
 import { other, block, inline, type Rules } from './rules.ts';
 import { callMaskHook, hookSlots } from './HookDispatch.ts';
-import { execAt, normalizeLabel, preparedLexerRules, scanCloserHints, scanInlineRuns, sourceText } from './helpers.ts';
+import { execAt, normalizeLabel, preparedLexerRules, scanCloserHints, scanInlineRuns, scanWindowHints, sourceText } from './helpers.ts';
 import type { CloserHints, InlineRuns } from './helpers.ts';
 import type { Token, TokensList, Tokens } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
@@ -148,6 +148,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   #closers = { star: -1, underscore: -1, tilde: -1 };
   #runTables: InlineRuns[] = [];
   #runDepth = 0;
+  #activeRuns: InlineRuns | undefined;
+  #activeOffset = 0;
   #blockMasks: number[] | undefined;
   #maskHook: ((src: string) => string) | undefined;
   #extensions: Pick<NonNullable<MarkedOptions['extensions']>, 'block' | 'inline' | 'startBlock' | 'startInline'> | null | undefined;
@@ -594,12 +596,45 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     // `'[a](b'.repeat(n)`. Extension tokenizers can pass generated text to
     // nested runs, so each run must check its own source.
     const prevLinkParenPossible = this.state.linkParenPossible;
+    const prevRuns = this.#activeRuns;
+    const prevOffset = this.#activeOffset;
+    this.#activeRuns = undefined;
+    this.#activeOffset = 0;
     this.state.linkParenPossible = src.includes(')');
     try {
       return this.#inlineTokensInner(src, tokens);
     } finally {
       // Restore the outer run's flag for the rest of its loop.
       this.state.linkParenPossible = prevLinkParenPossible;
+      this.#activeRuns = prevRuns;
+      this.#activeOffset = prevOffset;
+    }
+  }
+
+  /** @internal */
+  inlineChildren(text: string, offset: number): Token[] {
+    const runs = this.#activeRuns;
+    if (!runs?.share || text.includes('[') || text.includes('<') || text.includes('\\') || text.includes('`')) {
+      return this.inlineTokens(text);
+    }
+    const start = this.#activeOffset;
+    const first = start + offset;
+    const end = first + text.length;
+    const masks = runs.masks;
+    for (let i = 0; i < masks.length && masks[i] < end; i += 2) {
+      if (masks[i + 1] > first) return this.inlineTokens(text);
+    }
+    const hints = this.#closers;
+    const { star, underscore, tilde } = hints;
+    this.#activeOffset = first;
+    scanWindowHints(runs, first, end, hints);
+    try {
+      return this.#tokenizeInlines(text, runs.source, [], runs);
+    } finally {
+      this.#activeOffset = start;
+      hints.star = star;
+      hints.underscore = underscore;
+      hints.tilde = tilde;
     }
   }
 
@@ -624,14 +659,19 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     const depth = this.#runDepth++;
     let runs: InlineRuns | undefined;
     if (!fullMask) {
-      runs = this.#runTables[depth] ??= { entries: new Int32Array(0), length: 0, gfm: false, source: '', masks: [] };
+      runs = this.#runTables[depth] ??= { entries: new Int32Array(0), length: 0, gfm: false, source: '', masks: [], share: false };
       runs.length = 0;
+      runs.share = false;
       runs.masks.length = 0;
       runs.gfm = !!this.options.gfm && !this.options.pedantic;
     }
     try {
       const maskedSrc = this.#maskSrc(src, hints, fullMask, runs);
-      if (runs) runs.source = maskedSrc;
+      if (runs) {
+        runs.source = maskedSrc;
+        runs.share = maskedSrc === src;
+      }
+      this.#activeRuns = runs;
       return this.#tokenizeInlines(src, maskedSrc, tokens, runs);
     } finally {
       this.#runDepth = depth;
@@ -645,6 +685,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
 
   /** @hot */
   #tokenizeInlines(src: string, maskedSrc: string, tokens: Token[], runs: InlineRuns | undefined): Token[] {
+    const base = runs ? this.#activeOffset : maskedSrc.length - src.length;
     let keepPrevChar = false;
     let prevChar = '';
     let offset = 0;
@@ -719,7 +760,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // and the outer loop walks the run char-by-char, giving O(n^2) time.
       // Consume the whole run as literal text in one step.
       if (firstCode === 42 || firstCode === 95 || firstCode === 126) {
-        const pos = maskedSrc.length - src.length + offset;
+        const pos = base + offset;
         const lastCloser = firstCode === 42
           ? this.#closers.star
           : firstCode === 95 ? this.#closers.underscore : this.#closers.tilde;
@@ -743,7 +784,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // em & strong
       if ((firstCode === 42 || firstCode === 95
         || (this.#replaced & tokenizerFlags.emStrong))
-        && (token = this.#slots.emStrongAt(src, maskedSrc, prevChar, offset, firstCode === 42 ? this.#closers.star : this.#closers.underscore, runs))) {
+        && (token = this.#slots.emStrongAt(src, maskedSrc, prevChar, offset, firstCode === 42 ? this.#closers.star : this.#closers.underscore, runs, base))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -770,7 +811,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // del (gfm)
       if ((firstCode === 126
         || (this.#replaced & tokenizerFlags.del))
-        && (token = this.#slots.delAt(src, maskedSrc, prevChar, offset, this.#closers.tilde, runs))) {
+        && (token = this.#slots.delAt(src, maskedSrc, prevChar, offset, this.#closers.tilde, runs, base))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
