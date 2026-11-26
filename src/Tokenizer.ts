@@ -207,7 +207,9 @@ const gfmParagraphRule = block.gfm.paragraph;
 const pedanticParagraphRule = block.pedantic.paragraph;
 
 const htmlInterrupt = new RegExp(paragraphHtmlStart.source, 'y');
-const setextInterrupt = new RegExp(block.normal.lheading.source.slice(1), 'y');
+const standardSetextRule = block.normal.lheading;
+const gfmSetextRule = block.gfm.lheading;
+const pedanticSetextRule = block.pedantic.lheading;
 const tableInterrupt = new RegExp(other.tableHeader.source.replace(/^\^/, ''), 'y');
 
 /** @hot */
@@ -261,6 +263,76 @@ function stripCodeIndent(src: string, start: number, end: number): string {
 }
 
 /** @hot */
+function setextTableDelimiter(src: string, start: number): boolean {
+  let pipe = false;
+  for (let i = start; i < src.length; i++) {
+    const code = src.charCodeAt(i);
+    if (code === 124) pipe = true;
+    else if (code === 10) return pipe;
+    else if (code !== 32 && code !== 58 && code !== 45) return false;
+  }
+  return false;
+}
+
+/** @hot */
+function setextInterrupts(src: string, start: number, gfm: boolean, first: boolean): boolean {
+  let marker = start;
+  while (marker - start < 4 && src.charCodeAt(marker) === 32) marker++;
+  const code = src.charCodeAt(marker);
+  if (marker - start === 4 || code === 9) return first;
+  if (code === 62) return true;
+  if (code === 35 && headingMarkerEnd(src, marker, false) !== marker) return true;
+  if ((code === 96 || code === 126) && src.charCodeAt(marker + 1) === code && src.charCodeAt(marker + 2) === code) return true;
+  if (code === 60) {
+    htmlInterrupt.lastIndex = start;
+    if (htmlInterrupt.test(src)) return true;
+  }
+  if ((code === 45 || code === 95 || code === 42) && !first && thematicBreakEnd(src, marker) >= 0) return true;
+  const bullet = firstListMarkerEnd(src, start);
+  if (bullet && src.charCodeAt(start + bullet) === 32) return true;
+  return gfm && (code === 124 || code === 58 || code === 45) && setextTableDelimiter(src, marker);
+}
+
+/** @hot */
+function setextUnderlineStart(src: string, start: number, pedantic: boolean): number {
+  let marker = start;
+  while (marker - start < 3 && src.charCodeAt(marker) === 32) marker++;
+  const code = src.charCodeAt(marker);
+  if (code !== 45 && code !== 61) return -1;
+  let end = marker + 1;
+  while (src.charCodeAt(end) === code) end++;
+  let tail = src.charCodeAt(end);
+  while (tail === 32 || tail === 9) {
+    if (pedantic && tail === 9) return -1;
+    tail = src.charCodeAt(++end);
+  }
+  return end === src.length || tail === 10 ? marker : -1;
+}
+
+/** @hot */
+function setextTextEnd(src: string, start: number, gfm: boolean, pedantic: boolean): number {
+  if (!pedantic && setextInterrupts(src, start, gfm, true)) return -1;
+  let pos = start;
+  while (pos < src.length) {
+    const code = src.charCodeAt(pos);
+    if (code === 10) {
+      if (pos === start) return -1;
+      const line = pos + 1;
+      if (setextUnderlineStart(src, line, pedantic) >= 0) return pos;
+      if (pedantic || setextInterrupts(src, line, gfm, false)) return -1;
+      let blank = line;
+      while (blank < src.length && isStringWhitespace(src.charCodeAt(blank))) {
+        if (src.charCodeAt(blank++) === 10) return -1;
+      }
+    } else if (code === 13 || code === 0x2028 || code === 0x2029) {
+      return -1;
+    }
+    pos++;
+  }
+  return -1;
+}
+
+/** @hot */
 function paragraphEnd(src: string, offset: number, pedantic: boolean, gfm: boolean): number {
   let end = blockLineEnd(src, offset);
   while (end < src.length) {
@@ -284,8 +356,7 @@ function paragraphEnd(src: string, offset: number, pedantic: boolean, gfm: boole
         : atBlockStart && (hashEnd === src.length || isStringWhitespace(after))) break;
     }
     if (pedantic) {
-      setextInterrupt.lastIndex = start;
-      if (setextInterrupt.test(src)) break;
+      if (setextTextEnd(src, start, false, false) >= 0) break;
     } else if (atBlockStart) {
       if (marker === 60) {
         htmlInterrupt.lastIndex = start;
@@ -1321,6 +1392,18 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   /** @internal */
   /** @hot */
   lheadingAt(src: string, offset: number): Tokens.Heading | undefined {
+    const rule = this.rules.block.lheading;
+    if (rule === standardSetextRule || rule === gfmSetextRule || rule === pedanticSetextRule) {
+      const pedantic = rule === pedanticSetextRule;
+      const end = setextTextEnd(src, offset, rule === gfmSetextRule, pedantic);
+      if (end < 0) return;
+      const marker = setextUnderlineStart(src, end + 1, pedantic);
+      const depth = src.charCodeAt(marker) === 61 ? 1 : 2;
+      const start = trimStartOffset(src, offset, end);
+      const text = sourceText(src, start, trimEndOffset(src, start, end));
+      const raw = sourceText(src, offset, blockLineEnd(src, marker));
+      return createHeading(raw, depth, text, this.lexer.inline(text));
+    }
     const cap = execAt(this.rules.block.lheading, src, offset, this.rules.cursor?.block.lheading);
     if (cap) {
       const start = trimStartOffset(cap[1], 0, cap[1].length);
