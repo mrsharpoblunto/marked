@@ -312,22 +312,23 @@ function setextUnderlineStart(src: string, start: number, pedantic: boolean): nu
 /** @hot */
 function setextTextEnd(src: string, start: number, gfm: boolean, pedantic: boolean): number {
   if (!pedantic && setextInterrupts(src, start, gfm, true)) return -1;
-  let pos = start;
-  while (pos < src.length) {
-    const code = src.charCodeAt(pos);
-    if (code === 10) {
-      if (pos === start) return -1;
-      const line = pos + 1;
-      if (setextUnderlineStart(src, line, pedantic) >= 0) return pos;
-      if (pedantic || setextInterrupts(src, line, gfm, false)) return -1;
-      let blank = line;
-      while (blank < src.length && isStringWhitespace(src.charCodeAt(blank))) {
-        if (src.charCodeAt(blank++) === 10) return -1;
+  let end = lineEnd(src, start);
+  if (end === start) return -1;
+  while (end < src.length) {
+    const line = end + 1;
+    if (setextUnderlineStart(src, line, pedantic) >= 0) {
+      for (let i = start; i < end; i++) {
+        const code = src.charCodeAt(i);
+        if (code === 13 || code === 0x2028 || code === 0x2029) return -1;
       }
-    } else if (code === 13 || code === 0x2028 || code === 0x2029) {
-      return -1;
+      return end;
     }
-    pos++;
+    if (pedantic || setextInterrupts(src, line, gfm, false)) return -1;
+    let blank = line;
+    while (blank < src.length && isStringWhitespace(src.charCodeAt(blank))) {
+      if (src.charCodeAt(blank++) === 10) return -1;
+    }
+    end = lineEnd(src, line);
   }
   return -1;
 }
