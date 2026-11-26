@@ -39,12 +39,12 @@ type HooksObject<ParserOutput = string, RendererOutput = string> = {
   [K in keyof HooksApi<ParserOutput, RendererOutput>]?: (this: _Hooks<ParserOutput, RendererOutput>, ...args: Parameters<HooksApi<ParserOutput, RendererOutput>[K]>) => ReturnType<HooksApi<ParserOutput, RendererOutput>[K]> | Promise<ReturnType<HooksApi<ParserOutput, RendererOutput>[K]>>
 };
 
-type RendererApi<ParserOutput = string, RendererOutput = string> = Omit<_Renderer<ParserOutput, RendererOutput>, 'constructor' | 'options' | 'parser'>;
+type RendererApi<ParserOutput = string, RendererOutput = string> = Omit<_Renderer<ParserOutput, RendererOutput>, 'constructor' | 'options' | 'parser' | `${string}At`>;
 type RendererObject<ParserOutput = string, RendererOutput = string> = {
   [K in keyof RendererApi<ParserOutput, RendererOutput>]?: (this: _Renderer<ParserOutput, RendererOutput>, ...args: Parameters<RendererApi<ParserOutput, RendererOutput>[K]>) => ReturnType<RendererApi<ParserOutput, RendererOutput>[K]> | false
 };
 
-type TokenizerApi<ParserOutput = string, RendererOutput = string> = Omit<_Tokenizer<ParserOutput, RendererOutput>, 'constructor' | 'options' | 'rules' | 'lexer'>;
+type TokenizerApi<ParserOutput = string, RendererOutput = string> = Omit<_Tokenizer<ParserOutput, RendererOutput>, 'constructor' | 'options' | 'rules' | 'lexer' | `${string}At`>;
 type TokenizerObject<ParserOutput = string, RendererOutput = string> = {
   [K in keyof TokenizerApi<ParserOutput, RendererOutput>]?: (this: _Tokenizer<ParserOutput, RendererOutput>, ...args: Parameters<TokenizerApi<ParserOutput, RendererOutput>[K]>) => ReturnType<TokenizerApi<ParserOutput, RendererOutput>[K]> | false
 };

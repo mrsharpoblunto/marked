@@ -4,6 +4,8 @@ import {
   escapeHtmlEntities,
 } from './helpers.ts';
 import { other } from './rules.ts';
+import { emit } from './OutputBuffer.ts';
+import type { OutputBuffer } from './OutputBuffer.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
 import type { Token, Tokens } from './Tokens.ts';
 import type { _Parser } from './Parser.ts';
@@ -62,208 +64,457 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
     this.options = options || _defaults;
   }
 
-  /** @hot */
   space(token: Tokens.Space): RendererOutput {
-    return '' as RendererOutput;
+    const output = { html: '' };
+    this.spaceAt(token, output);
+    return output.html as RendererOutput;
   }
 
+  /** @internal */
   /** @hot */
-  code({ text, lang, escaped }: Tokens.Code): RendererOutput {
+  spaceAt(token: Tokens.Space, output: OutputBuffer): void {
+
+  }
+
+  code({ text, lang, escaped }: Tokens.Code): RendererOutput;
+  code(token: Tokens.Code): RendererOutput {
+    const output = { html: '' };
+    this.codeAt(token, output);
+    return output.html as RendererOutput;
+  }
+
+  /** @internal */
+  /** @hot */
+  codeAt(token: Tokens.Code, output: OutputBuffer): void {
+    const { text, lang, escaped } = token;
     const langString = (lang || '').match(other.notSpaceStart)?.[0];
-
-    // An empty code block has no content, so it must not gain a newline.
-    const code = text ? text.replace(other.endingNewline, '') + '\n' : '';
-
-    if (!langString) {
-      return '<pre><code>'
-        + (escaped ? code : escapeHtmlEntities(code, true))
-        + '</code></pre>\n' as RendererOutput;
+    if (langString) {
+      emit(output, '<pre><code class="language-');
+      emit(output, escapeHtmlEntities(langString));
+      emit(output, '">');
+    } else {
+      emit(output, '<pre><code>');
     }
-
-    return '<pre><code class="language-'
-      + escapeHtmlEntities(langString)
-      + '">'
-      + (escaped ? code : escapeHtmlEntities(code, true))
-      + '</code></pre>\n' as RendererOutput;
+    if (text) {
+      const code = text.replace(other.endingNewline, '');
+      emit(output, escaped ? code : escapeHtmlEntities(code, true));
+      emit(output, '\n');
+    }
+    emit(output, '</code></pre>\n');
   }
 
-  /** @hot */
-  blockquote({ tokens }: Tokens.Blockquote): RendererOutput {
-    const body = this.parser.parse(tokens);
-    return `<blockquote>\n${body}</blockquote>\n` as RendererOutput;
+  blockquote({ tokens }: Tokens.Blockquote): RendererOutput;
+  blockquote(token: Tokens.Blockquote): RendererOutput {
+    const output = { html: '' };
+    this.blockquoteAt(token, output);
+    return output.html as RendererOutput;
   }
 
+  /** @internal */
   /** @hot */
-  html({ text }: Tokens.HTML | Tokens.Tag): RendererOutput {
-    return text as RendererOutput;
+  blockquoteAt(token: Tokens.Blockquote, output: OutputBuffer): void {
+    emit(output, '<blockquote>\n');
+    this.parser.renderBlocks(token.tokens, output);
+    emit(output, '</blockquote>\n');
   }
 
+  html({ text }: Tokens.HTML | Tokens.Tag): RendererOutput;
+  html(token: Tokens.HTML | Tokens.Tag): RendererOutput {
+    const output = { html: '' };
+    this.htmlAt(token, output);
+    return output.html as RendererOutput;
+  }
+
+  /** @internal */
   /** @hot */
+  htmlAt(token: Tokens.HTML | Tokens.Tag, output: OutputBuffer): void {
+    emit(output, token.text);
+  }
+
   def(token: Tokens.Def): RendererOutput {
-    return '' as RendererOutput;
+    const output = { html: '' };
+    this.defAt(token, output);
+    return output.html as RendererOutput;
   }
 
+  /** @internal */
   /** @hot */
-  heading({ tokens, depth }: Tokens.Heading): RendererOutput {
-    return `<h${depth}>${this.parser.parseInline(tokens)}</h${depth}>\n` as RendererOutput;
+  defAt(token: Tokens.Def, output: OutputBuffer): void {
+
   }
 
+  heading({ tokens, depth }: Tokens.Heading): RendererOutput;
+  heading(token: Tokens.Heading): RendererOutput {
+    const output = { html: '' };
+    this.headingAt(token, output);
+    return output.html as RendererOutput;
+  }
+
+  /** @internal */
   /** @hot */
+  headingAt(token: Tokens.Heading, output: OutputBuffer): void {
+    const { depth, tokens } = token;
+    emit(output, '<h');
+    emit(output, depth);
+    emit(output, '>');
+    this.parser.renderInlines(tokens, output);
+    emit(output, '</h');
+    emit(output, depth);
+    emit(output, '>\n');
+  }
+
   hr(token: Tokens.Hr): RendererOutput {
-    return '<hr>\n' as RendererOutput;
+    const output = { html: '' };
+    this.hrAt(token, output);
+    return output.html as RendererOutput;
   }
 
+  /** @internal */
   /** @hot */
+  hrAt(token: Tokens.Hr, output: OutputBuffer): void {
+    emit(output, '<hr>\n');
+  }
+
   list(token: Tokens.List): RendererOutput {
-    const ordered = token.ordered;
-    const start = token.start;
-
-    let body = '';
-    for (let j = 0; j < token.items.length; j++) {
-      const item = token.items[j];
-      body += this.listitem(item);
-    }
-
-    const type = ordered ? 'ol' : 'ul';
-    const startAttr = (ordered && start !== 1) ? (' start="' + start + '"') : '';
-    return '<' + type + startAttr + '>\n' + body + '</' + type + '>\n' as RendererOutput;
+    const output = { html: '' };
+    _Renderer.prototype.listAt.call(rendererSlots(this), token, output);
+    return output.html as RendererOutput;
   }
 
+  /** @internal */
   /** @hot */
-  listitem(item: Tokens.ListItem): RendererOutput {
-    return `<li>${this.parser.parse(item.tokens)}</li>\n` as RendererOutput;
-  }
-
-  /** @hot */
-  checkbox({ checked }: Tokens.Checkbox): RendererOutput {
-    return '<input '
-      + (checked ? 'checked="" ' : '')
-      + 'disabled="" type="checkbox"> ' as RendererOutput;
-  }
-
-  /** @hot */
-  paragraph({ tokens }: Tokens.Paragraph): RendererOutput {
-    return `<p>${this.parser.parseInline(tokens)}</p>\n` as RendererOutput;
-  }
-
-  /** @hot */
-  table(token: Tokens.Table): RendererOutput {
-    let header = '';
-
-    // header
-    let cell = '';
-    for (let j = 0; j < token.header.length; j++) {
-      cell += this.tablecell(token.header[j]);
-    }
-    header += this.tablerow({ text: cell as ParserOutput });
-
-    let body = '';
-    for (let j = 0; j < token.rows.length; j++) {
-      const row = token.rows[j];
-
-      cell = '';
-      for (let k = 0; k < row.length; k++) {
-        cell += this.tablecell(row[k]);
+  listAt(token: Tokens.List, output: OutputBuffer): void {
+    if (token.ordered) {
+      emit(output, '<ol');
+      if (token.start !== 1) {
+        emit(output, ' start="');
+        emit(output, token.start);
+        emit(output, '"');
       }
-
-      body += this.tablerow({ text: cell as ParserOutput });
+      emit(output, '>\n');
+    } else {
+      emit(output, '<ul>\n');
     }
-    if (body) body = `<tbody>${body}</tbody>`;
-
-    return '<table>\n'
-      + '<thead>\n'
-      + header
-      + '</thead>\n'
-      + body
-      + '</table>\n' as RendererOutput;
+    for (let i = 0; i < token.items.length; i++) {
+      this.listitemAt(token.items[i], output);
+    }
+    emit(output, token.ordered ? '</ol>\n' : '</ul>\n');
   }
 
-  /** @hot */
-  tablerow({ text }: Tokens.TableRow<ParserOutput>): RendererOutput {
-    return `<tr>\n${text}</tr>\n` as RendererOutput;
+  listitem(item: Tokens.ListItem): RendererOutput {
+    const output = { html: '' };
+    this.listitemAt(item, output);
+    return output.html as RendererOutput;
   }
 
+  /** @internal */
   /** @hot */
+  listitemAt(item: Tokens.ListItem, output: OutputBuffer): void {
+    emit(output, '<li>');
+    this.parser.renderBlocks(item.tokens, output);
+    emit(output, '</li>\n');
+  }
+
+  checkbox({ checked }: Tokens.Checkbox): RendererOutput;
+  checkbox(token: Tokens.Checkbox): RendererOutput {
+    const output = { html: '' };
+    this.checkboxAt(token, output);
+    return output.html as RendererOutput;
+  }
+
+  /** @internal */
+  /** @hot */
+  checkboxAt(token: Tokens.Checkbox, output: OutputBuffer): void {
+    emit(output, token.checked
+      ? '<input checked="" disabled="" type="checkbox"> '
+      : '<input disabled="" type="checkbox"> ');
+  }
+
+  paragraph({ tokens }: Tokens.Paragraph): RendererOutput;
+  paragraph(token: Tokens.Paragraph): RendererOutput {
+    const output = { html: '' };
+    this.paragraphAt(token, output);
+    return output.html as RendererOutput;
+  }
+
+  /** @internal */
+  /** @hot */
+  paragraphAt(token: Tokens.Paragraph, output: OutputBuffer): void {
+    emit(output, '<p>');
+    this.parser.renderInlines(token.tokens, output);
+    emit(output, '</p>\n');
+  }
+
+  table(token: Tokens.Table): RendererOutput {
+    const output = { html: '' };
+    _Renderer.prototype.tableAt.call(rendererSlots(this), token, output);
+    return output.html as RendererOutput;
+  }
+
+  /** @internal */
+  /** @hot */
+  tableAt(token: Tokens.Table, output: OutputBuffer): void {
+    emit(output, '<table>\n<thead>\n');
+    this.tableCellsAt(token.header, output);
+    emit(output, '</thead>\n');
+    if (token.rows.length) {
+      const beforeBody = output.html;
+      emit(output, '<tbody>');
+      const bodyStart = output.html.length;
+      for (let i = 0; i < token.rows.length; i++) {
+        this.tableCellsAt(token.rows[i], output);
+      }
+      if (output.html.length === bodyStart) {
+        output.html = beforeBody;
+      } else {
+        emit(output, '</tbody>');
+      }
+    }
+    emit(output, '</table>\n');
+  }
+
+  tablerow({ text }: Tokens.TableRow<ParserOutput>): RendererOutput;
+  tablerow(token: Tokens.TableRow<ParserOutput>): RendererOutput {
+    const output = { html: '' };
+    this.tablerowAt(token, output);
+    return output.html as RendererOutput;
+  }
+
+  /** @internal */
+  /** @hot */
+  tablerowAt(token: Tokens.TableRow<ParserOutput>, output: OutputBuffer): void {
+    emit(output, '<tr>\n');
+    emit(output, token.text);
+    emit(output, '</tr>\n');
+  }
+
   tablecell(token: Tokens.TableCell): RendererOutput {
-    const content = this.parser.parseInline(token.tokens);
-    const type = token.header ? 'th' : 'td';
-    const tag = token.align
-      ? `<${type} align="${token.align}">`
-      : `<${type}>`;
-    return tag + content + `</${type}>\n` as RendererOutput;
+    const output = { html: '' };
+    this.tablecellAt(token, output);
+    return output.html as RendererOutput;
+  }
+
+  /** @internal */
+  /** @hot */
+  tablecellAt(token: Tokens.TableCell, output: OutputBuffer): void {
+    emit(output, token.header ? '<th' : '<td');
+    if (token.align) {
+      emit(output, ' align="');
+      emit(output, token.align);
+      emit(output, '"');
+    }
+    emit(output, '>');
+    this.parser.renderInlines(token.tokens, output);
+    emit(output, token.header ? '</th>\n' : '</td>\n');
   }
 
   /**
    * span level renderer
    */
-  /** @hot */
-  strong({ tokens }: Tokens.Strong): RendererOutput {
-    return `<strong>${this.parser.parseInline(tokens)}</strong>` as RendererOutput;
+  strong({ tokens }: Tokens.Strong): RendererOutput;
+  strong(token: Tokens.Strong): RendererOutput {
+    const output = { html: '' };
+    this.strongAt(token, output);
+    return output.html as RendererOutput;
   }
 
+  /** @internal */
   /** @hot */
-  em({ tokens }: Tokens.Em): RendererOutput {
-    return `<em>${this.parser.parseInline(tokens)}</em>` as RendererOutput;
+  strongAt(token: Tokens.Strong, output: OutputBuffer): void {
+    emit(output, '<strong>');
+    this.parser.renderInlines(token.tokens, output);
+    emit(output, '</strong>');
   }
 
-  /** @hot */
-  codespan({ text }: Tokens.Codespan): RendererOutput {
-    return `<code>${escapeHtmlEntities(text, true)}</code>` as RendererOutput;
+  em({ tokens }: Tokens.Em): RendererOutput;
+  em(token: Tokens.Em): RendererOutput {
+    const output = { html: '' };
+    this.emAt(token, output);
+    return output.html as RendererOutput;
   }
 
+  /** @internal */
   /** @hot */
+  emAt(token: Tokens.Em, output: OutputBuffer): void {
+    emit(output, '<em>');
+    this.parser.renderInlines(token.tokens, output);
+    emit(output, '</em>');
+  }
+
+  codespan({ text }: Tokens.Codespan): RendererOutput;
+  codespan(token: Tokens.Codespan): RendererOutput {
+    const output = { html: '' };
+    this.codespanAt(token, output);
+    return output.html as RendererOutput;
+  }
+
+  /** @internal */
+  /** @hot */
+  codespanAt(token: Tokens.Codespan, output: OutputBuffer): void {
+    emit(output, '<code>');
+    emit(output, escapeHtmlEntities(token.text, true));
+    emit(output, '</code>');
+  }
+
   br(token: Tokens.Br): RendererOutput {
-    return '<br>' as RendererOutput;
+    const output = { html: '' };
+    this.brAt(token, output);
+    return output.html as RendererOutput;
   }
 
+  /** @internal */
   /** @hot */
-  del({ tokens }: Tokens.Del): RendererOutput {
-    return `<del>${this.parser.parseInline(tokens)}</del>` as RendererOutput;
+  brAt(token: Tokens.Br, output: OutputBuffer): void {
+    emit(output, '<br>');
   }
 
+  del({ tokens }: Tokens.Del): RendererOutput;
+  del(token: Tokens.Del): RendererOutput {
+    const output = { html: '' };
+    this.delAt(token, output);
+    return output.html as RendererOutput;
+  }
+
+  /** @internal */
   /** @hot */
-  link({ href, title, text, tokens, autolink }: Tokens.Link): RendererOutput {
-    // References are not resolved inside an autolink, so every `&` there is
-    // literal. Elsewhere only an `&` that cannot start one needs escaping.
-    const parsedText = autolink
-      ? escapeHtmlEntities(text, true)
-      : this.parser.parseInline(tokens) as string;
-    const cleanHref = cleanUrl(href);
-    if (cleanHref === null) {
-      return parsedText as RendererOutput;
+  delAt(token: Tokens.Del, output: OutputBuffer): void {
+    emit(output, '<del>');
+    this.parser.renderInlines(token.tokens, output);
+    emit(output, '</del>');
+  }
+
+  link({ href, title, text, tokens, autolink }: Tokens.Link): RendererOutput;
+  link(token: Tokens.Link): RendererOutput {
+    const output = { html: '' };
+    this.linkAt(token, output);
+    return output.html as RendererOutput;
+  }
+
+  /** @internal */
+  /** @hot */
+  linkAt(token: Tokens.Link, output: OutputBuffer): void {
+    const { title, text, tokens, autolink } = token;
+    const href = cleanUrl(token.href);
+    if (href !== null) {
+      emit(output, '<a href="');
+      emit(output, escapeHtmlEntities(href, autolink));
+      emit(output, '"');
+      if (title) {
+        emit(output, ' title="');
+        emit(output, escapeHtmlEntities(title));
+        emit(output, '"');
+      }
+      emit(output, '>');
     }
-    href = escapeHtmlEntities(cleanHref, autolink);
-    let out = '<a href="' + href + '"';
-    if (title) {
-      out += ' title="' + (escapeHtmlEntities(title)) + '"';
+    if (autolink) {
+      emit(output, escapeHtmlEntities(text, true));
+    } else {
+      this.parser.renderInlines(tokens, output);
     }
-    out += '>' + parsedText + '</a>';
-    return out as RendererOutput;
+    if (href !== null) emit(output, '</a>');
   }
 
+  image({ href, title, text, tokens }: Tokens.Image): RendererOutput;
+  image(token: Tokens.Image): RendererOutput {
+    const output = { html: '' };
+    this.imageAt(token, output);
+    return output.html as RendererOutput;
+  }
+
+  /** @internal */
   /** @hot */
-  image({ href, title, text, tokens }: Tokens.Image): RendererOutput {
+  imageAt(token: Tokens.Image, output: OutputBuffer): void {
+    const { href, title, tokens } = token;
+    let text = token.text;
     if (tokens) {
-      text = this.parser.parseInline(imageTextTokens(tokens), this.parser.textRenderer) as string;
+      const previous = output.html;
+      output.html = '';
+      this.parser.renderText(imageTextTokens(tokens), output);
+      text = output.html;
+      output.html = previous;
     }
     const cleanHref = cleanUrl(href);
     if (cleanHref === null) {
-      return escapeHtmlEntities(text) as RendererOutput;
+      emit(output, escapeHtmlEntities(text));
+      return;
     }
-    href = cleanHref;
-
-    let out = `<img src="${escapeHtmlEntities(href)}" alt="${escapeHtmlEntities(text)}"`;
+    emit(output, '<img src="');
+    emit(output, escapeHtmlEntities(cleanHref));
+    emit(output, '" alt="');
+    emit(output, escapeHtmlEntities(text));
+    emit(output, '"');
     if (title) {
-      out += ` title="${escapeHtmlEntities(title)}"`;
+      emit(output, ' title="');
+      emit(output, escapeHtmlEntities(title));
+      emit(output, '"');
     }
-    out += '>';
-    return out as RendererOutput;
+    emit(output, '>');
   }
 
-  /** @hot */
   text(token: Tokens.Text | Tokens.Escape): RendererOutput {
-    return 'tokens' in token && token.tokens
-      ? this.parser.parseInline(token.tokens) as unknown as RendererOutput
-      : ('escaped' in token && token.escaped ? token.text as RendererOutput : escapeHtmlEntities(token.text) as RendererOutput);
+    const output = { html: '' };
+    this.textAt(token, output);
+    return output.html as RendererOutput;
   }
+
+  /** @internal */
+  /** @hot */
+  textAt(token: Tokens.Text | Tokens.Escape, output: OutputBuffer): void {
+    if ('tokens' in token && token.tokens) {
+      this.parser.renderInlines(token.tokens, output);
+    } else {
+      emit(output, 'escaped' in token && token.escaped ? token.text : escapeHtmlEntities(token.text));
+    }
+  }
+
+  /** @internal */
+  tableCellsAt(cells: Tokens.TableCell[], output: OutputBuffer): void {
+    emit(output, '<tr>\n');
+    for (let i = 0; i < cells.length; i++) {
+      this.tablecellAt(cells[i], output);
+    }
+    emit(output, '</tr>\n');
+  }
+}
+
+const rendererMethods = ['space', 'code', 'blockquote', 'html', 'def', 'heading', 'hr', 'list', 'listitem', 'checkbox', 'paragraph', 'table', 'tablerow', 'tablecell', 'strong', 'em', 'codespan', 'br', 'del', 'link', 'image', 'text'] as const;
+const configuredRenderers = new WeakMap<object, unknown>();
+
+// The checker cannot follow slots that call user renderers.
+function createRendererSlots<P, R>(renderer: _Renderer<P, R>): _Renderer<P, R> {
+  let slots = renderer;
+  for (const name of rendererMethods) {
+    const method = renderer[name];
+    if (method === _Renderer.prototype[name]) continue;
+    if (slots === renderer) slots = Object.create(renderer);
+    const render = method as (this: _Renderer<P, R>, token: Token | Tokens.TableCell | Tokens.TableRow<P>) => R;
+    Object.defineProperty(slots, name + 'At', {
+      value(token: Token, output: OutputBuffer) {
+        emit(output, render.call(renderer, token));
+      },
+    });
+    if (name === 'tablerow') {
+      Object.defineProperty(slots, 'tableCellsAt', {
+        value(cells: Tokens.TableCell[], output: OutputBuffer) {
+          const previous = output.html;
+          output.html = '';
+          for (let i = 0; i < cells.length; i++) {
+            slots.tablecellAt(cells[i], output);
+          }
+          const text = output.html;
+          output.html = previous;
+          slots.tablerowAt({ text: text as P }, output);
+        },
+      });
+    }
+  }
+  return slots;
+}
+
+export function configureRenderer<P, R>(renderer: _Renderer<P, R>): void {
+  configuredRenderers.set(renderer, createRendererSlots(renderer));
+}
+
+export function rendererSlots<P, R>(renderer: _Renderer<P, R>): _Renderer<P, R> {
+  return configuredRenderers.get(renderer) as _Renderer<P, R> | undefined ?? createRendererSlots(renderer);
 }

@@ -2,7 +2,7 @@ import { _getDefaults } from './defaults.ts';
 import { _Lexer, configureTokenizer } from './Lexer.ts';
 import { _Parser } from './Parser.ts';
 import { _Hooks } from './Hooks.ts';
-import { _Renderer } from './Renderer.ts';
+import { _Renderer, configureRenderer } from './Renderer.ts';
 import { _Tokenizer } from './Tokenizer.ts';
 import { _TextRenderer } from './TextRenderer.ts';
 import { escapeHtmlEntities } from './helpers.ts';
@@ -178,14 +178,14 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
       if (pack.renderer) {
         const renderer = this.defaults.renderer || new _Renderer<ParserOutput, RendererOutput>(this.defaults);
         for (const prop in pack.renderer) {
-          if (!(prop in renderer)) {
+          if (!(prop in renderer) || prop.endsWith('At')) {
             throw new Error(`renderer '${prop}' does not exist`);
           }
           if (['options', 'parser'].includes(prop)) {
             // ignore options property
             continue;
           }
-          const rendererProp = prop as Exclude<keyof _Renderer<ParserOutput, RendererOutput>, 'options' | 'parser'>;
+          const rendererProp = prop as Exclude<keyof _Renderer<ParserOutput, RendererOutput>, 'options' | 'parser' | `${string}At`>;
           const rendererFunc = pack.renderer[rendererProp] as GenericRendererFunction<RendererOutput>;
           const prevRenderer = renderer[rendererProp] as GenericRendererFunction<RendererOutput>;
           // Replace renderer with func to run extension, but fall back if false
@@ -197,6 +197,7 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
             return (ret === false ? '' : ret ?? '') as RendererOutput;
           };
         }
+        configureRenderer(renderer);
         opts.renderer = renderer;
       }
       if (pack.tokenizer) {
@@ -209,7 +210,7 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
             // ignore options, rules, and lexer properties
             continue;
           }
-          const tokenizerProp = prop as Exclude<keyof _Tokenizer<ParserOutput, RendererOutput>, 'options' | 'rules' | 'lexer'>;
+          const tokenizerProp = prop as Exclude<keyof _Tokenizer<ParserOutput, RendererOutput>, 'options' | 'rules' | 'lexer' | `${string}At`>;
           const tokenizerFunc = pack.tokenizer[tokenizerProp] as UnknownFunction;
           const prevTokenizer = tokenizer[tokenizerProp] as UnknownFunction;
           // Replace tokenizer with func to run extension, but fall back if false
@@ -299,6 +300,7 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
 
   setOptions(opt: MarkedOptions<ParserOutput, RendererOutput>) {
     if (opt.tokenizer) configureTokenizer(opt.tokenizer);
+    if (opt.renderer) configureRenderer(opt.renderer);
     this.defaults = { ...this.defaults, ...opt };
     return this;
   }
