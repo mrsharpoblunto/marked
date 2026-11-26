@@ -5,6 +5,18 @@ import { beginEmStrongDelCloserScan, cachedLastPossibleDelCloserIndex, cachedLas
 import type { Token, TokensList, Tokens } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
 
+const backticks = /`/g;
+
+function maskEscapedPunctuation(match: string, code: string | undefined, punct: string | undefined) {
+  if (punct) {
+    return '+'.repeat(match.length);
+  }
+  if (code) {
+    return code + match.slice(code.length, -code.length).replace(backticks, '+') + code;
+  }
+  return match;
+}
+
 /**
  * Block Lexer
  */
@@ -680,15 +692,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     // unicode punctuation, so an escaped astral character is 3 code units.
     // A backslash inside a code span is literal, not an escape. Mask the
     // backticks inside the span instead, so blockSkip still skips all of it.
-    maskedSrc = maskedSrc.replace(this.tokenizer.rules.inline.anyPunctuationOutsideCode, (match0, code, punct) => {
-      if (punct) {
-        return '+'.repeat(match0.length);
-      }
-      if (code) {
-        return code + match0.slice(code.length, -code.length).replace(/`/g, '+') + code;
-      }
-      return match0;
-    });
+    maskedSrc = maskedSrc.replace(this.tokenizer.rules.inline.anyPunctuationOutsideCode, maskEscapedPunctuation);
 
     // Mask out other blocks
     maskedSrc = this.#maskBlocks(maskedSrc);
