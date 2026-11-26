@@ -168,7 +168,6 @@ function isLabelEndInsideToken(src: string, label: string, labelStart: number, r
 }
 
 const standardListRule = block.normal.list;
-const noTableRule = block.normal.table;
 const commonMarkParagraphRule = block.normal.paragraph;
 const gfmParagraphRule = block.gfm.paragraph;
 const pedanticParagraphRule = block.pedantic.paragraph;
@@ -861,9 +860,6 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   table(src: string): Tokens.Table | undefined {
-    const rule = this.rules.block.table;
-    if (rule === noTableRule) return;
-
     let headers: string[] | undefined;
     let aligns: string[] | undefined;
     if (this.options.gfm && !this.options.pedantic) {
@@ -877,7 +873,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         return;
       }
     }
-    const cap = rule.exec(src);
+    const cap = this.rules.block.table.exec(src);
     if (!cap) {
       return;
     }
@@ -925,19 +921,15 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       });
     }
 
-    for (let row = 0; row < rows.length; row++) {
-      const cells = splitCells(rows[row], item.header.length);
-      const rowCells: Tokens.TableCell[] = [];
-      for (let i = 0; i < cells.length; i++) {
-        const cell = cells[i];
-        rowCells.push({
+    for (const row of rows) {
+      item.rows.push(splitCells(row, item.header.length).map((cell, i) => {
+        return {
           text: cell,
           tokens: this.lexer.inline(cell),
           header: false,
           align: item.align[i],
-        });
-      }
-      item.rows.push(rowCells);
+        };
+      }));
     }
 
     return item;
