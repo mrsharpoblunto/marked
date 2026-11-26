@@ -240,7 +240,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    */
   /** @hot */
   lex(src: string) {
-    src = src.replace(other.carriageReturn, '\n');
+    if (src.indexOf('\r') !== -1) src = src.replace(other.carriageReturn, '\n');
 
     this.blockTokens(src, this.tokens);
 
