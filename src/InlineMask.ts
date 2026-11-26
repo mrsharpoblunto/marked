@@ -234,6 +234,7 @@ export function maskReferences(mask: InlineMask, source: string, start: number, 
     if (Object.hasOwn(links, normalizeLabel(source, ref + 1, after - 1))) {
       if (ref > i + 1 && code !== 33 && hasTextLink(mask, source, i + 1, ref - 1, rules, links)) {
         maskReferences(mask, source, i + 1, ref - 1, rules, links);
+        codes[ref - 1] = 93;
         bracketMask(mask, ref, after);
       } else {
         bracketMask(mask, i, after);
