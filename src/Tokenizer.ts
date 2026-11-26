@@ -392,6 +392,7 @@ function rawTagNameMatches(raw: string, start: number): boolean {
   return length !== 0 && (next === 62 || isStringWhitespace(next));
 }
 
+/** @hot */
 function listLineText(src: string, start: number, end: number, column: number): string {
   let pos = start;
   let width = column;
@@ -1049,7 +1050,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         return;
       }
 
-      const tag = normalizeLabel(cap[1], 0, cap[1].length);
+      const tag = normalizeLabel(cap[1]);
       const href = cap[2] ? cap[2].replace(this.rules.other.hrefBrackets, '$1').replace(this.rules.inline.anyPunctuation, '$1') : '';
       const title = cap[3] ? cap[3].substring(1, cap[3].length - 1).replace(this.rules.inline.anyPunctuation, '$1') : cap[3];
       return createDef(tag, withoutTrailingNewlines(cap[0]), href, title);
@@ -1321,7 +1322,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       }
 
       const label = cap[2] || cap[1];
-      const link = links[normalizeLabel(label, 0, label.length)];
+      const link = links[normalizeLabel(label)];
       if (!link) {
         const text = cap[0].charAt(0);
         return createText(text, text, undefined);

@@ -287,7 +287,8 @@ export function trimTrailingBlankLines(str: string) {
  * through upper case does, as in commonmark.js; the final `toLowerCase()`
  * keeps the folded label lower case, the form `def.tag` has always used.
  */
-export function normalizeLabel(label: string, first: number, last: number): string {
+/** @hot */
+export function normalizeLabel(label: string, first = 0, last = label.length): string {
   const start = trimStartOffset(label, first, last);
   const end = trimEndOffset(label, start, last);
   let needsRewrite = false;
@@ -371,30 +372,38 @@ export interface CloserHints {
  * openers are still applied in the loop (#4099).
  */
 /** @hot */
-export function scanCloserHints(src: string, hints: CloserHints): void {
+export function scanCloserHints(src: string, hints: CloserHints, masks: number[] | undefined): void {
   let star = -1;
   let underscore = -1;
   let tilde = -1;
   let i = 0;
+  let range = 0;
+  let maskEnd = -1;
   while (i < src.length) {
-    const code = src.charCodeAt(i);
-    if (code !== 42 && code !== 95 && code !== 126) {
-      i++;
-      continue;
-    }
-    const start = i++;
-    while (src.charCodeAt(i) === code) i++;
+    const end = masks?.[range] ?? src.length;
+    while (i < end) {
+      const code = src.charCodeAt(i);
+      if (code !== 42 && code !== 95 && code !== 126) {
+        i++;
+        continue;
+      }
+      const start = i++;
+      while (i < end && src.charCodeAt(i) === code) i++;
 
-    if (start === 0) continue;
-    const prev = src.charCodeAt(start - 1);
-    if (prev === 32 || prev === 9 || prev === 10 || prev === 13 || prev === 12) continue;
-    if (code === 42) {
-      star = start;
-    } else if (code === 95) {
-      underscore = start;
-    } else {
-      tilde = start;
+      if (start === 0) continue;
+      const prev = start === maskEnd ? 93 : src.charCodeAt(start - 1);
+      if (prev === 32 || prev === 9 || prev === 10 || prev === 13 || prev === 12) continue;
+      if (code === 42) {
+        star = start;
+      } else if (code === 95) {
+        underscore = start;
+      } else {
+        tilde = start;
+      }
     }
+    if (end === src.length) break;
+    i = maskEnd = masks![range + 1];
+    range += 2;
   }
   hints.star = star;
   hints.underscore = underscore;
@@ -403,7 +412,7 @@ export function scanCloserHints(src: string, hints: CloserHints): void {
 
 export function lastCloser(src: string, delimiter: number): number {
   const hints = { star: -1, underscore: -1, tilde: -1 };
-  scanCloserHints(src, hints);
+  scanCloserHints(src, hints, undefined);
   return delimiter === 42 ? hints.star : delimiter === 95 ? hints.underscore : hints.tilde;
 }
 

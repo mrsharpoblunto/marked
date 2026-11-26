@@ -5,6 +5,7 @@ import { _defaults } from './defaults.ts';
 import { other, block, inline, type Rules } from './rules.ts';
 import { callMaskHook, hookSlots } from './HookDispatch.ts';
 import { execAt, normalizeLabel, preparedLexerRules, scanCloserHints, sourceText } from './helpers.ts';
+import type { CloserHints } from './helpers.ts';
 import type { Token, TokensList, Tokens } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
 
@@ -484,26 +485,33 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       return false;
     }
 
-    const linkRule = this.tokenizer.rules.inline.link;
-    for (const match of text.matchAll(this.tokenizer.rules.inline.blockSkip)) {
-      // blockSkip also matches code spans and html, and the `!` of an image is
-      // left out of the match, so read the character before it.
-      if (linkRule.test(match[0]) && text.charCodeAt(match.index - 1) !== 33) {
-        return true;
+    const { link, blockSkip, reflinkSearch } = this.tokenizer.rules.inline;
+    let match: RegExpExecArray | null;
+    const previousBlockIndex = blockSkip.lastIndex;
+    blockSkip.lastIndex = 0;
+    try {
+      while ((match = blockSkip.exec(text))) {
+        // The match omits the leading exclamation mark of an image.
+        if (text.charCodeAt(match.index - 1) !== 33 && link.test(match[0])) return true;
       }
+    } finally {
+      blockSkip.lastIndex = previousBlockIndex;
     }
 
-    for (const match of text.matchAll(this.tokenizer.rules.inline.reflinkSearch)) {
-      const match0 = match[0];
-      const refStart = match0.lastIndexOf('[');
-      if (match0.charCodeAt(0) === 33 || !Object.hasOwn(this.tokens.links, normalizeLabel(match0, refStart + 1, match0.length - 1))) {
-        continue;
+    const previousRefIndex = reflinkSearch.lastIndex;
+    reflinkSearch.lastIndex = 0;
+    try {
+      while ((match = reflinkSearch.exec(text))) {
+        const match0 = match[0];
+        const refStart = match0.lastIndexOf('[');
+        if (match0.charCodeAt(0) === 33 || !Object.hasOwn(this.tokens.links, normalizeLabel(match0, refStart + 1, match0.length - 1))) {
+          continue;
+        }
+        if (refStart > 1 && this.linkInText(match0.slice(1, refStart - 1))) continue;
+        return true;
       }
-      // a candidate holding a link is not a link either, so it does not count
-      if (refStart > 1 && this.linkInText(match0.slice(1, refStart - 1))) {
-        continue;
-      }
-      return true;
+    } finally {
+      reflinkSearch.lastIndex = previousRefIndex;
     }
 
     return false;
@@ -536,22 +544,15 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     // ~ to start. Skip building it for a run without one, unless a custom
     // tokenizer or an emStrongMask hook may read it.
     const hasDelimiter = src.includes('*') || src.includes('_') || src.includes('~');
-    const maskedSrc = hasDelimiter
-      || this.#maskHook
-      || (this.#replaced & tokenizerFlags.emStrong)
-      || (this.#replaced & tokenizerFlags.del)
-      ? this.#maskSrc(src)
-      : src;
-
-    // Without a delimiter no opener can match, so nothing reads the closer scan.
+    const fullMask = !!this.#maskHook || !!(this.#replaced & (tokenizerFlags.emStrong | tokenizerFlags.del));
     if (!hasDelimiter) {
-      return this.#tokenizeInlines(src, maskedSrc, tokens);
+      return this.#tokenizeInlines(src, fullMask ? this.#maskSrc(src, undefined, true) : src, tokens);
     }
 
     const hints = this.#closers;
     const { star, underscore, tilde } = hints;
-    scanCloserHints(maskedSrc, hints);
     try {
+      const maskedSrc = this.#maskSrc(src, hints, fullMask);
       return this.#tokenizeInlines(src, maskedSrc, tokens);
     } finally {
       // A nested inline pass must restore its caller's closer positions.
@@ -753,11 +754,11 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    * as in `<a title=">">`, so mask the whole tag.
    */
   /** @hot */
-  #maskBlocks(src: string): string {
+  #maskBlocks(src: string, hints: CloserHints | undefined, fullMask: boolean): string {
     const { blockSkip, tag, autolink } = this.tokenizer.rules.inline;
     const cursor = this.tokenizer.rules.cursor?.inline;
     let ranges = this.#blockMasks;
-    const fullMask = this.#maskHook || (this.#replaced & (tokenizerFlags.emStrong | tokenizerFlags.del));
+    if (ranges) ranges.length = 0;
     let match: RegExpExecArray | null;
     blockSkip.lastIndex = 0;
     while ((match = blockSkip.exec(src))) {
@@ -778,6 +779,12 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       if (!ranges) this.#blockMasks = ranges = [];
       ranges.push(start, end);
     }
+    if (hints && !fullMask) {
+      scanCloserHints(src, hints, ranges);
+      // With no closer outside the masked blocks, the tokenizer has no
+      // reason to pass the source to a right-delimiter expression.
+      if (hints.star < 0 && hints.underscore < 0 && hints.tilde < 0) return src;
+    }
     if (!ranges?.length) return src;
     let masked = '';
     let last = 0;
@@ -796,7 +803,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    * delimiters inside them.
    */
   /** @hot */
-  #maskSrc(src: string): string {
+  #maskSrc(src: string, hints: CloserHints | undefined, fullMask: boolean): string {
     // String with links masked to avoid interference with em and strong
     let maskedSrc = src;
 
@@ -831,21 +838,13 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     // unicode punctuation, so an escaped astral character is 3 code units.
     // A backslash inside a code span is literal, not an escape. Mask the
     // backticks inside the span instead, so blockSkip still skips all of it.
-    maskedSrc = maskedSrc.replace(this.tokenizer.rules.inline.anyPunctuationOutsideCode, (match0, code, punct) => {
-      if (punct) {
-        return '+'.repeat(match0.length);
-      }
-      if (code) {
-        return code + match0.slice(code.length, -code.length).replace(/`/g, '+') + code;
-      }
-      return match0;
-    });
+    if (maskedSrc.includes('\\') || maskedSrc.includes('`')) {
+      maskedSrc = maskedSrc.replace(this.tokenizer.rules.inline.anyPunctuationOutsideCode, maskCodeAndEscapes);
+    }
 
-    // Mask out other blocks
-    maskedSrc = this.#maskBlocks(maskedSrc);
-
-    // Mask out blocks from extensions
+    maskedSrc = this.#maskBlocks(maskedSrc, hints, fullMask);
     if (this.#maskHook) maskedSrc = callMaskHook(this.#maskHook, this, maskedSrc);
+    if (hints && fullMask) scanCloserHints(maskedSrc, hints, undefined);
 
     return maskedSrc;
   }
@@ -878,4 +877,10 @@ function hasInlineDelimiter(source: string, start: number, end: number): boolean
     if (code === 42 || code === 95 || code === 126) return true;
   }
   return false;
+}
+
+function maskCodeAndEscapes(match: string, ticks: string | undefined, punctuation: string | undefined): string {
+  if (punctuation) return '+'.repeat(match.length);
+  if (ticks) return ticks + match.slice(ticks.length, -ticks.length).replace(/`/g, '+') + ticks;
+  return match;
 }
