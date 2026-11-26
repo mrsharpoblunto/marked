@@ -56,7 +56,7 @@ function outputLink(cap: string[], link: Pick<Tokens.Link, 'href' | 'title'>, ra
   const href = link.href;
   const title = link.title || null;
   const text = unescapeLinkLabel(cap[1], rules);
-  const isImage = cap[0].charAt(0) === '!';
+  const isImage = cap[0].charCodeAt(0) === 33;
 
   const outerInLink = lexer.state.inLink;
   const outerLinkEmitted = lexer.state.linkEmitted;
@@ -1018,7 +1018,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (first !== 91 && first !== 33) return; // [ or !
     const cap = this.rules.inline.link.exec(src);
     if (cap) {
-      const labelStart = cap[0].charAt(0) === '!' ? 2 : 1;
+      const labelStart = cap[0].charCodeAt(0) === 33 ? 2 : 1;
       if (!this.options.pedantic && isLabelEndInsideToken(src, cap[1], labelStart, this.rules)) {
         return;
       }
@@ -1094,7 +1094,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     let cap;
     if ((cap = this.rules.inline.reflink.exec(src))
       || (cap = this.rules.inline.nolink.exec(src))) {
-      const labelStart = cap[0].charAt(0) === '!' ? 2 : 1;
+      const labelStart = cap[0].charCodeAt(0) === 33 ? 2 : 1;
       if (!this.options.pedantic && isLabelEndInsideToken(src, cap[1], labelStart, this.rules)) {
         return;
       }
@@ -1163,7 +1163,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         && (!!nextChar || (delimChar === '*' && !runPrevPunct));
       if (delimChar !== '*' && delimChar !== '_') return;
       const endReg = delimChar === '*' ? this.rules.inline.emStrongRDelimAst : this.rules.inline.emStrongRDelimUnd;
-      const lastPossibleEmStrongCloserIndex = cachedLastPossibleEmStrongCloserIndex(this, maskedSrc, delimChar);
+      const lastPossibleEmStrongCloserIndex = cachedLastPossibleEmStrongCloserIndex(this, maskedSrc, delimChar.charCodeAt(0));
       const emStrongCloserWindowStart = maskedSrc.length - src.length + lLength;
       if (lastPossibleEmStrongCloserIndex < emStrongCloserWindowStart) return;
       // Clip maskedSrc to same section of string as src (move to lexer?)

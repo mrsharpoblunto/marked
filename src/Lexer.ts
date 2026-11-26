@@ -350,7 +350,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     for (const match of text.matchAll(this.tokenizer.rules.inline.blockSkip)) {
       // blockSkip also matches code spans and html, and the `!` of an image is
       // left out of the match, so read the character before it.
-      if (linkRule.test(match[0]) && text.charAt(match.index - 1) !== '!') {
+      if (linkRule.test(match[0]) && text.charCodeAt(match.index - 1) !== 33) {
         return true;
       }
     }
@@ -358,7 +358,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     for (const match of text.matchAll(this.tokenizer.rules.inline.reflinkSearch)) {
       const match0 = match[0];
       const refStart = match0.lastIndexOf('[');
-      if (match0.charAt(0) === '!' || !Object.hasOwn(this.tokens.links, normalizeLabel(match0.slice(refStart + 1, -1)))) {
+      if (match0.charCodeAt(0) === 33 || !Object.hasOwn(this.tokens.links, normalizeLabel(match0.slice(refStart + 1, -1)))) {
         continue;
       }
       // a candidate holding a link is not a link either, so it does not count
@@ -491,13 +491,13 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // anywhere ahead in maskedSrc, every opener position fails identically
       // and the outer loop walks the run char-by-char, giving O(n^2) time.
       // Consume the whole run as literal text in one step.
-      const firstChar = src[0];
-      if (firstChar === '*' || firstChar === '_') {
+      const firstCode = src.charCodeAt(0);
+      if (firstCode === 42 || firstCode === 95) {
         const pos = maskedSrc.length - src.length;
-        const lastCloser = cachedLastPossibleEmStrongCloserIndex(this.tokenizer, maskedSrc, firstChar);
+        const lastCloser = cachedLastPossibleEmStrongCloserIndex(this.tokenizer, maskedSrc, firstCode);
         if (lastCloser <= pos) {
           let runEnd = 1;
-          while (runEnd < src.length && src.charCodeAt(runEnd) === firstChar.charCodeAt(0)) runEnd++;
+          while (runEnd < src.length && src.charCodeAt(runEnd) === firstCode) runEnd++;
           const raw = src.substring(0, runEnd);
           const lastToken = tokens.at(-1);
           if (lastToken?.type === 'text' && !lastToken.escaped) {
@@ -507,11 +507,11 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
             tokens.push({ type: 'text', raw, text: raw, escaped: false } as Tokens.Text);
           }
           src = src.substring(runEnd);
-          prevChar = firstChar;
+          prevChar = raw[0];
           keepPrevChar = true;
           continue;
         }
-      } else if (firstChar === '~') {
+      } else if (firstCode === 126) {
         const pos = maskedSrc.length - src.length;
         const lastCloser = cachedLastPossibleDelCloserIndex(this.tokenizer, maskedSrc);
         if (lastCloser <= pos) {
@@ -526,7 +526,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
             tokens.push({ type: 'text', raw, text: raw, escaped: false } as Tokens.Text);
           }
           src = src.substring(runEnd);
-          prevChar = firstChar;
+          prevChar = raw[0];
           keepPrevChar = true;
           continue;
         }
@@ -634,7 +634,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     while ((match = blockSkip.exec(src))) {
       const start = match.index + (match[2] ? match[2].length : 0);
       let end = match.index + match[0].length;
-      if (src.charAt(start) === '<') {
+      if (src.charCodeAt(start) === 60) {
         const rest = src.slice(start);
         const html = tag.exec(rest) || autolink.exec(rest);
         if (!html) {
@@ -672,7 +672,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         // link, so flattening the whole span would hide the emphasis that
         // does still apply inside it. Mask the links it holds instead.
         // Images are exempt: their text is flattened into an alt attribute.
-        if (refStart > 1 && match0.charAt(0) !== '!') {
+        if (refStart > 1 && match0.charCodeAt(0) !== 33) {
           const text = match0.slice(1, refStart - 1);
           if (this.linkInText(text)) {
             return '[' + text.replace(reflinkSearch, maskReflink)

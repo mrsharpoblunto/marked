@@ -187,21 +187,11 @@ export function findClosingBracket(str: string, b: string) {
   return -1;
 }
 
-interface LastPossibleEmStrongCloserIndex {
-  /** Last `*` run that can close emphasis or strong. `-1` if none. */
-  '*': number;
-  /** Last `_` run that can close emphasis or strong. `-1` if none. */
-  _: number;
-}
-
-/**
- * Closer hints for one inline `maskedSrc`. Held only while that pass runs.
- */
 interface EmStrongDelCloserHintFrame {
   maskedSrc: string;
-  lastPossibleEmStrongCloserIndex: LastPossibleEmStrongCloserIndex;
-  /** Last `~` run that can close strikethrough. `-1` if none. */
-  lastPossibleDelCloserIndex: number;
+  star: number;
+  underscore: number;
+  tilde: number;
 }
 
 /**
@@ -224,34 +214,31 @@ const emStrongDelCloserHintStacks = new WeakMap<object, EmStrongDelCloserHintFra
  * openers are still applied in the loop (#4099).
  */
 function scanLastPossibleEmStrongDelClosers(src: string): EmStrongDelCloserHintFrame {
-  const lastPossibleEmStrongCloserIndex: LastPossibleEmStrongCloserIndex = { '*': -1, _: -1 };
-  let lastPossibleDelCloserIndex = -1;
-  const len = src.length;
-  for (let i = 0; i < len; i++) {
-    const ch = src[i];
-    if (ch !== '*' && ch !== '_' && ch !== '~') {
+  let star = -1;
+  let underscore = -1;
+  let tilde = -1;
+  let i = 0;
+  while (i < src.length) {
+    const code = src.charCodeAt(i);
+    if (code !== 42 && code !== 95 && code !== 126) {
+      i++;
       continue;
     }
-    // A leading run has no predecessor, same as one after a line break.
-    const prev = i === 0 ? '\n' : src[i - 1];
-    let j = i + 1;
-    while (j < len && src[j] === ch) {
-      j++;
+    const start = i++;
+    while (src.charCodeAt(i) === code) i++;
+
+    if (start === 0) continue;
+    const prev = src.charCodeAt(start - 1);
+    if (prev === 32 || prev === 9 || prev === 10 || prev === 13 || prev === 12) continue;
+    if (code === 42) {
+      star = start;
+    } else if (code === 95) {
+      underscore = start;
+    } else {
+      tilde = start;
     }
-    if (prev !== ' ' && prev !== '\t' && prev !== '\n' && prev !== '\r' && prev !== '\f') {
-      if (ch === '~') {
-        lastPossibleDelCloserIndex = i;
-      } else {
-        lastPossibleEmStrongCloserIndex[ch] = i;
-      }
-    }
-    i = j - 1;
   }
-  return {
-    maskedSrc: src,
-    lastPossibleEmStrongCloserIndex,
-    lastPossibleDelCloserIndex,
-  };
+  return { maskedSrc: src, star, underscore, tilde };
 }
 
 /**
@@ -292,12 +279,12 @@ export function endEmStrongDelCloserScan(tokenizer: object): void {
  * pass's source; otherwise scans this string and discards the result.
  */
 /** @hot */
-export function cachedLastPossibleEmStrongCloserIndex(tokenizer: object, maskedSrc: string, delim: '*' | '_'): number {
-  const frame = emStrongDelCloserHintStacks.get(tokenizer)?.at(-1);
-  if (frame && frame.maskedSrc === maskedSrc) {
-    return frame.lastPossibleEmStrongCloserIndex[delim];
+export function cachedLastPossibleEmStrongCloserIndex(tokenizer: object, maskedSrc: string, delim: number): number {
+  let frame = emStrongDelCloserHintStacks.get(tokenizer)?.at(-1);
+  if (!frame || frame.maskedSrc !== maskedSrc) {
+    frame = scanLastPossibleEmStrongDelClosers(maskedSrc);
   }
-  return scanLastPossibleEmStrongDelClosers(maskedSrc).lastPossibleEmStrongCloserIndex[delim];
+  return delim === 42 ? frame.star : frame.underscore;
 }
 
 /**
@@ -309,9 +296,9 @@ export function cachedLastPossibleEmStrongCloserIndex(tokenizer: object, maskedS
 export function cachedLastPossibleDelCloserIndex(tokenizer: object, maskedSrc: string): number {
   const frame = emStrongDelCloserHintStacks.get(tokenizer)?.at(-1);
   if (frame && frame.maskedSrc === maskedSrc) {
-    return frame.lastPossibleDelCloserIndex;
+    return frame.tilde;
   }
-  return scanLastPossibleEmStrongDelClosers(maskedSrc).lastPossibleDelCloserIndex;
+  return scanLastPossibleEmStrongDelClosers(maskedSrc).tilde;
 }
 
 export function expandTabs(line: string, indent = 0) {
