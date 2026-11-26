@@ -333,7 +333,9 @@ function setextInterrupts(src: string, start: number, gfm: boolean, first: boole
   if (code === 32) {
     do code = src.charCodeAt(++marker); while (code === 32 && padding + marker - start < 4);
   }
-  if (padding + marker - start >= 4 || code === 9) return first;
+  if (padding + marker - start >= 4 || code === 9) {
+    return first || (gfm && code === 32 && setextTableDelimiter(src, marker));
+  }
   switch (code) {
     case 62: return true;
     case 35: return headingMarkerEnd(src, marker, false) !== marker;
