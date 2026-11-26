@@ -192,6 +192,11 @@ function isLabelEndInsideToken(src: string, label: string, labelStart: number, r
   return false;
 }
 
+const standardQuotePrefix = other.blockquoteSetextReplace2;
+const standardListNesting = other.listReplaceNesting;
+const standardIsTask = other.listIsTask;
+const standardReplaceTask = other.listReplaceTask;
+const standardTaskCheckbox = other.listTaskCheckbox;
 const standardListRule = block.normal.list;
 const standardListInterrupt = other.listInterruptsParagraph;
 const standardListHr = other.hrRegex;
@@ -746,6 +751,38 @@ function skipSpaces(src: string, maximum: number): number {
 }
 
 /** @hot */
+function pedanticListIndent(line: string): string {
+  const indent = skipSpaces(line, line.length);
+  return indent && indent < line.length ? '  ' + sourceText(line, ((indent - 1) & 3) + 1, line.length) : line;
+}
+
+/** @hot */
+function taskMarkerAt(src: string, offset: number): boolean {
+  const marker = src.charCodeAt(offset + 1);
+  return src.charCodeAt(offset) === 91 && src.charCodeAt(offset + 2) === 93
+    && (marker === 32 || (marker | 32) === 120);
+}
+
+/** @hot */
+function taskPrefixEnd(src: string): number {
+  if (!taskMarkerAt(src, 0)) return 0;
+  const end = blockContentStart(src, 3);
+  return end > 3 ? end : 0;
+}
+
+/** @hot */
+function stripTaskPrefix(src: string): string {
+  return sourceText(src, taskPrefixEnd(src), src.length);
+}
+
+/** @hot */
+function firstTaskMarker(src: string): string | undefined {
+  for (let i = 0; i + 2 < src.length; i++) {
+    if (taskMarkerAt(src, i)) return sourceText(src, i, i + 3);
+  }
+}
+
+/** @hot */
 function startsListInterrupt(src: string, maxIndent: number, pedantic: boolean, containers: boolean): boolean {
   let pos = skipSpaces(src, maxIndent);
   const marker = src.charCodeAt(pos);
@@ -850,6 +887,27 @@ function quoteMarkerAt(src: string, start: number): number {
   let marker = start;
   while (marker < start + 3 && src.charCodeAt(marker) === 32) marker++;
   return src.charCodeAt(marker) === 62 ? marker : -1;
+}
+
+/** @hot */
+function stripQuoteMarkers(src: string, start: number, end: number): string {
+  let span = start;
+  let result = '';
+  for (let line = start; line < end;) {
+    const marker = quoteMarkerAt(src, line);
+    if (marker >= 0) {
+      result += sourceText(src, span, line);
+      span = marker + 1;
+      const code = src.charCodeAt(span);
+      if (code === 32 || code === 9) span++;
+    }
+    let code = src.charCodeAt(line);
+    while (line < end && code !== 10 && code !== 13 && code !== 0x2028 && code !== 0x2029) {
+      code = src.charCodeAt(++line);
+    }
+    line++;
+  }
+  return result + sourceText(src, span, end);
 }
 
 function quoteText(src: string, first: number, end: number): string {
@@ -1164,8 +1222,10 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           // nested blockquote, which already had one '>' marker stripped, so
           // strip one marker from them too. Otherwise a restated marker after a
           // lazy line is re-parsed as a spurious deeper blockquote.
-          const remaining = src.slice(position, quoteEnd);
-          const newText = oldToken.raw + '\n' + remaining.replace(this.rules.other.blockquoteSetextReplace2, '');
+          const continuation = this.rules.other.blockquoteSetextReplace2 === standardQuotePrefix
+            ? stripQuoteMarkers(src, position, quoteEnd)
+            : sourceText(src, position, quoteEnd).replace(this.rules.other.blockquoteSetextReplace2, '');
+          const newText = oldToken.raw + '\n' + continuation;
           this.lexer.state.inBlockquote = true;
           const newToken = this.blockquote(newText)!;
           this.lexer.state.inBlockquote = outerInBlockquote;
@@ -1340,7 +1400,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
             const nextEnd = lineEnd(src, offset);
             const rawLine = sourceText(src, offset, nextEnd);
             // Pedantic parsing checks the line after realigning its indentation.
-            const nextLine = pedantic ? rawLine.replace(this.rules.other.listReplaceNesting, '  ') : rawLine;
+            let nextLine = rawLine;
+            if (pedantic) {
+              nextLine = this.rules.other.listReplaceNesting === standardListNesting
+                ? pedanticListIndent(rawLine)
+                : rawLine.replace(this.rules.other.listReplaceNesting, '  ');
+            }
 
             if (startsListInterrupt(nextLine, maxIndent, pedantic, true) || htmlBeginRegex.test(nextLine)) {
               break;
@@ -1431,7 +1496,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
                   ? setextTextEnd(`${previous}\n${nextLine}`, 0, this.rules.block.lheading === gfmSetextRule, false) >= 0
                   : this.rules.block.lheading.test(`${previous}\n${nextLine}`));
               const continuation = setextContinuation
-                ? `    ${nextLineWithoutTabs.replace(/^ {0,3}/, '')}`
+                ? `    ${sourceText(nextLineWithoutTabs, skipSpaces(nextLineWithoutTabs, 3), nextLineWithoutTabs.length)}`
                 : nextLine;
               itemContents += '\n' + continuation;
               lineIsLazy = true;
@@ -1458,7 +1523,16 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           }
         }
 
-        list.items.push(createListItem(raw, !!this.options.gfm && this.rules.other.listIsTask.test(itemContents), false, itemContents));
+        let task = false;
+        if (this.options.gfm) {
+          if (this.rules.other.listIsTask === standardIsTask) {
+            const end = taskPrefixEnd(itemContents);
+            task = end !== 0 && end < itemContents.length && !isStringWhitespace(itemContents.charCodeAt(end));
+          } else {
+            task = this.rules.other.listIsTask.test(itemContents);
+          }
+        }
+        list.items.push(createListItem(raw, task, false, itemContents));
       }
 
       // Do not consume trailing whitespace from the final item.
@@ -1495,21 +1569,25 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         const itemToken = item.tokens[0];
         if (item.task && (itemToken?.type === 'text' || itemToken?.type === 'paragraph')) {
           // Remove checkbox markdown from item tokens
-          item.text = item.text.replace(this.rules.other.listReplaceTask, '');
-          itemToken.raw = itemToken.raw.replace(this.rules.other.listReplaceTask, '');
-          itemToken.text = itemToken.text.replace(this.rules.other.listReplaceTask, '');
+          const rule = this.rules.other.listReplaceTask;
+          const standardTask = rule === standardReplaceTask;
+          item.text = standardTask ? stripTaskPrefix(item.text) : item.text.replace(rule, '');
+          itemToken.raw = standardTask ? stripTaskPrefix(itemToken.raw) : itemToken.raw.replace(rule, '');
+          itemToken.text = standardTask ? stripTaskPrefix(itemToken.text) : itemToken.text.replace(rule, '');
           // The first token queued its text first, so its entry is found right away
           const inlineQueue = this.lexer.inlineQueue;
           for (let j = queueStarts[i]; j < inlineQueue.length; j++) {
             if (inlineQueue[j].tokens === itemToken.tokens) {
-              inlineQueue[j].src = inlineQueue[j].src.replace(this.rules.other.listReplaceTask, '');
+              const entry = inlineQueue[j];
+              entry.src = standardTask ? stripTaskPrefix(entry.src) : entry.src.replace(rule, '');
               break;
             }
           }
 
-          const taskRaw = this.rules.other.listTaskCheckbox.exec(item.raw);
-          if (taskRaw) {
-            const checkboxToken: Tokens.Checkbox = createCheckbox(taskRaw[0] + ' ', taskRaw[0].charCodeAt(1) !== 32);
+          const taskRule = this.rules.other.listTaskCheckbox;
+          const taskRaw = taskRule === standardTaskCheckbox ? firstTaskMarker(item.raw) : taskRule.exec(item.raw)?.[0];
+          if (taskRaw !== undefined) {
+            const checkboxToken: Tokens.Checkbox = createCheckbox(taskRaw + ' ', taskRaw.charCodeAt(1) !== 32);
             item.checked = checkboxToken.checked;
             if (list.loose) {
               if (item.tokens[0] && ['paragraph', 'text'].includes(item.tokens[0].type) && 'tokens' in item.tokens[0] && item.tokens[0].tokens) {
