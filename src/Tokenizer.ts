@@ -11,7 +11,7 @@ import {
   cachedLastPossibleEmStrongCloserIndex,
   cachedLastPossibleDelCloserIndex,
 } from './helpers.ts';
-import { inline, type Rules } from './rules.ts';
+import { block, inline, type Rules } from './rules.ts';
 import type { _Lexer } from './Lexer.ts';
 import type { Links, Tokens, Token } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
@@ -165,6 +165,26 @@ function isLabelEndInsideToken(src: string, label: string, labelStart: number, r
     i += token[0].length - 1;
   }
   return false;
+}
+
+const standardListRule = block.normal.list;
+
+/** @hot */
+function firstListMarkerEnd(src: string): number {
+  let end = 0;
+  while (end < 3 && src.charCodeAt(end) === 32) end++;
+
+  let code = src.charCodeAt(end);
+  if (code !== 42 && code !== 43 && code !== 45) {
+    const start = end;
+    while (code >= 48 && code <= 57 && end - start < 9) {
+      code = src.charCodeAt(++end);
+    }
+    if (end === start || (code !== 46 && code !== 41)) return 0;
+  }
+
+  const next = src.charCodeAt(++end);
+  return end === src.length || next === 9 || next === 10 || next === 32 ? end : 0;
 }
 
 function listMarkerEnd(src: string, marker: number, ordered: boolean, pedantic: boolean): number {
@@ -484,8 +504,10 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   list(src: string): Tokens.List | undefined {
-    const cap = this.rules.block.list.exec(src);
-    if (cap) {
+    const standardRule = this.rules.block.list === standardListRule;
+    const cap = standardRule ? undefined : this.rules.block.list.exec(src);
+    const markerEnd = standardRule ? firstListMarkerEnd(src) : cap?.[1].length ?? 0;
+    if (markerEnd || cap) {
       // Inside a list item, paragraph lines are lexed as text tokens, so a list after one would
       // interrupt the paragraph. Only a non-empty list starting with a bullet or 1 can do that
       if (!this.options.pedantic && this.lexer.state.lastToken?.type === 'text'
@@ -496,15 +518,15 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       // src is only consumed from the front, so every raw below is a slice of
       // listSrc rather than a string built up line by line
       const listSrc = src;
-      const bull = cap[1].trim();
-      const marker = bull.charCodeAt(bull.length - 1);
-      const isordered = bull.length > 1;
+      const bull = cap?.[1].trim();
+      const marker = bull === undefined ? src.charCodeAt(markerEnd - 1) : bull.charCodeAt(bull.length - 1);
+      const isordered = bull === undefined ? marker === 46 || marker === 41 : bull.length > 1;
 
       const list: Tokens.List = {
         type: 'list',
         raw: '',
         ordered: isordered,
-        start: isordered ? +bull.slice(0, -1) : '',
+        start: isordered ? +(bull === undefined ? src.slice(0, markerEnd - 1) : bull.slice(0, -1)) : '',
         loose: false,
         items: [],
       };
