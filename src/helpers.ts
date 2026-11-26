@@ -98,7 +98,6 @@ const preparedInline = {
 };
 
 const preparedOther = {
-  blockquoteStart: prepareRule(other.blockquoteStart),
   listInterruptsParagraph: prepareRule(other.listInterruptsParagraph),
   htmlBegin: prepareRule(other.htmlBeginRegex(4)),
   tableHeader: prepareRule(other.tableHeader),
@@ -467,9 +466,10 @@ export function expandBlockquoteTabs(src: string, first: number, limit: number):
     if (start !== first) expanded += '\n';
     splitBlockquoteLine(src, start, end, fenceDepth, part);
     if (fenceDepth !== part.depth) fenceMarker = 0;
-    const content = quoteContentStart(src, part.rest, end, part.contentIndent);
+    const content = part.contentIndent > 3 ? '' : ' '.repeat(part.contentIndent) + src.slice(part.rest, end);
     if (fenceMarker) {
-      if (src.charCodeAt(content) !== fenceMarker || quoteFenceLength(src, content, end, true) < fenceLength) {
+      const close = other.blockquoteFenceClose.exec(content)?.[1];
+      if (!close || close.charCodeAt(0) !== fenceMarker || close.length < fenceLength) {
         expanded += part.prefix;
         expanded += ' '.repeat(part.keptPadding);
         expanded += src.slice(part.keptStart, end);
@@ -479,11 +479,11 @@ export function expandBlockquoteTabs(src: string, first: number, limit: number):
       fenceMarker = 0;
       fenceDepth = Infinity;
     } else {
-      if (quoteListStarter(src, content, end)) return expanded + src.slice(start, limit);
-      const openLength = quoteFenceLength(src, content, end, false);
-      if (openLength) {
-        fenceMarker = src.charCodeAt(content);
-        fenceLength = openLength;
+      if (other.blockquoteListItemStart.test(content)) return expanded + src.slice(start, limit);
+      const open = other.blockquoteFenceOpen.exec(content)?.[1];
+      if (open) {
+        fenceMarker = open.charCodeAt(0);
+        fenceLength = open.length;
         fenceDepth = part.depth;
       } else {
         fenceDepth = Infinity;
@@ -495,46 +495,6 @@ export function expandBlockquoteTabs(src: string, first: number, limit: number):
     start = end + 1;
   }
   return expanded;
-}
-
-/** @hot */
-function quoteContentStart(src: string, offset: number, end: number, indent: number): number {
-  while (offset < end && src.charCodeAt(offset) === 32 && indent <= 3) {
-    offset++;
-    indent++;
-  }
-  return indent <= 3 && offset < end ? offset : -1;
-}
-
-/** @hot */
-function quoteFenceLength(src: string, start: number, end: number, closing: boolean): number {
-  const marker = src.charCodeAt(start);
-  if (marker !== 96 && marker !== 126) return 0;
-  let offset = start + 1;
-  while (offset < end && src.charCodeAt(offset) === marker) offset++;
-  const length = offset - start;
-  if (length < 3) return 0;
-  if (closing) {
-    while (offset < end && (src.charCodeAt(offset) === 32 || src.charCodeAt(offset) === 9)) offset++;
-    return offset === end ? length : 0;
-  }
-  if (marker === 96) {
-    const next = src.indexOf('`', offset);
-    if (next >= 0 && next < end) return 0;
-  }
-  return length;
-}
-
-/** @hot */
-function quoteListStarter(src: string, start: number, end: number): boolean {
-  let offset = start;
-  let code = src.charCodeAt(offset);
-  if (code !== 42 && code !== 43 && code !== 45) {
-    while (offset < end && offset - start < 9 && code >= 48 && code <= 57) code = src.charCodeAt(++offset);
-    if (offset === start || (code !== 46 && code !== 41)) return false;
-  }
-  const next = src.charCodeAt(++offset);
-  return offset === end || next === 32 || next === 9;
 }
 
 interface BlockquoteLine {
