@@ -139,7 +139,9 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   #extensions: Pick<NonNullable<MarkedOptions['extensions']>, 'block' | 'inline' | 'startBlock' | 'startInline'> | null | undefined;
 
   constructor(options?: MarkedOptions<ParserOutput, RendererOutput>) {
-    this.tokens = createTokensList();
+    // TokenList cannot be created in one go
+    this.tokens = [] as unknown as TokensList;
+    this.tokens.links = Object.create(null);
     this.options = options || _defaults;
     const suppliedTokenizer = this.options.tokenizer;
     this.tokenizer = suppliedTokenizer || new _Tokenizer<ParserOutput, RendererOutput>();
@@ -165,38 +167,12 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       inBlockquote: false,
     };
 
-    this.tokenizer.rules = { other, block: block.normal, inline: inline.normal };
-    this.#selectRules();
-  }
+    const rules = {
+      other,
+      block: block.normal,
+      inline: inline.normal,
+    };
 
-  /** @internal */
-  resetDefault(options: MarkedOptions<ParserOutput, RendererOutput>): void {
-    this.tokens = createTokensList();
-    this.inlineQueue.length = 0;
-    this.options = options;
-    options.tokenizer = this.tokenizer;
-    this.tokenizer.options = options;
-    this.state.inLink = false;
-    this.state.inRawBlock = false;
-    this.state.linkEmitted = false;
-    this.state.linkParenPossible = true;
-    this.state.top = true;
-    this.state.inBlockquote = false;
-    this.state.lastToken = undefined;
-    this.#selectRules();
-  }
-
-  /** @internal */
-  releaseDefault(): void {
-    this.tokens = emptyTokensList;
-    this.inlineQueue.length = 0;
-    this.state.lastToken = undefined;
-  }
-
-  #selectRules(): void {
-    const rules = this.tokenizer.rules;
-    rules.block = block.normal;
-    rules.inline = inline.normal;
     if (this.options.pedantic) {
       rules.block = block.pedantic;
       rules.inline = inline.pedantic;
@@ -208,6 +184,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         rules.inline = inline.gfm;
       }
     }
+    this.tokenizer.rules = rules;
   }
 
   /**
@@ -860,11 +837,3 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     }
   }
 }
-
-function createTokensList(): TokensList {
-  const tokens = [] as unknown as TokensList;
-  tokens.links = Object.create(null);
-  return tokens;
-}
-
-const emptyTokensList = createTokensList();

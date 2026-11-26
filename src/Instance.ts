@@ -316,32 +316,6 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
     return _Parser.parse<ParserOutput, RendererOutput>(tokens, options ?? this.defaults);
   }
 
-  #lexer: _Lexer<ParserOutput, RendererOutput> | undefined;
-  #parser: _Parser<ParserOutput, RendererOutput> | undefined;
-  #compiling = false;
-
-  #compileDefault(src: string, options: MarkedOptions<ParserOutput, RendererOutput>, block: boolean) {
-    let lexer = this.#lexer;
-    if (lexer) {
-      lexer.resetDefault(options);
-    } else {
-      this.#lexer = lexer = new _Lexer(options);
-    }
-    let parser = this.#parser;
-    if (parser) {
-      parser.resetDefault(options);
-    } else {
-      this.#parser = parser = new _Parser(options);
-    }
-    this.#compiling = true;
-    try {
-      return block ? parser.parse(lexer.lex(src)) : parser.parseInline(lexer.inlineTokens(src));
-    } finally {
-      lexer.releaseDefault();
-      this.#compiling = false;
-    }
-  }
-
   private parseMarkdown(blockType: boolean) {
     type overloadedParse = {
       (src: string, options: MarkedOptions<ParserOutput, RendererOutput> & { async: true }): Promise<ParserOutput>;
@@ -354,21 +328,20 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
       const origOpt = { ...options };
       const opt = { ...this.defaults, ...origOpt };
 
-      const silent = !!opt.silent;
-      const async = !!opt.async;
+      const throwError = this.onError(!!opt.silent, !!opt.async);
 
       // throw error if an extension set async to true but parse was called with async: false
       if (this.defaults.async === true && origOpt.async === false) {
-        return this.onError(new Error('marked(): The async option was set to true by an extension. Remove async: false from the parse options object to return a Promise.'), silent, async);
+        return throwError(new Error('marked(): The async option was set to true by an extension. Remove async: false from the parse options object to return a Promise.'));
       }
 
       // throw error in case of non string input
       if (typeof src === 'undefined' || src === null) {
-        return this.onError(new Error('marked(): input parameter is undefined or null'), silent, async);
+        return throwError(new Error('marked(): input parameter is undefined or null'));
       }
       if (typeof src !== 'string') {
-        return this.onError(new Error('marked(): input parameter is of type '
-          + Object.prototype.toString.call(src) + ', string expected'), silent, async);
+        return throwError(new Error('marked(): input parameter is of type '
+          + Object.prototype.toString.call(src) + ', string expected'));
       }
 
       if (opt.hooks) {
@@ -380,63 +353,62 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
       if (opt.async) {
         return (async() => {
           const processedSrc = hooks ? await hooks.preprocess(src) : src;
-          const tokens = hooks
-            ? await (await hooks.provideLexer(blockType))(processedSrc, opt)
-            : await (blockType ? _Lexer.lex : _Lexer.lexInline)(processedSrc, opt);
+          const lexer = hooks ? await hooks.provideLexer(blockType) : (blockType ? _Lexer.lex : _Lexer.lexInline);
+          const tokens = await lexer(processedSrc, opt);
           const processedTokens = hooks ? await hooks.processAllTokens(tokens) : tokens;
           if (opt.walkTokens) {
             await Promise.all(this.walkTokens(processedTokens, opt.walkTokens));
           }
-          const html = hooks
-            ? await (await hooks.provideParser(blockType))(processedTokens, opt)
-            : await (blockType ? _Parser.parse : _Parser.parseInline)(processedTokens, opt);
+          const parser = hooks ? await hooks.provideParser(blockType) : (blockType ? _Parser.parse : _Parser.parseInline);
+          const html = await parser(processedTokens, opt);
           return hooks ? await hooks.postprocess(html) : html;
-        })().catch(e => this.onError(e, silent, async));
+        })().catch(throwError);
       }
 
       try {
-        if (!hooks && !opt.tokenizer && !opt.renderer && !opt.extensions && !opt.walkTokens && !this.#compiling) {
-          return this.#compileDefault(src, opt, blockType);
-        }
         if (hooks) {
           src = hooks.preprocess(src) as string;
         }
-        let tokens = hooks ? hooks.provideLexer(blockType)(src, opt) : (blockType ? _Lexer.lex : _Lexer.lexInline)(src, opt);
+        const lexer = hooks ? hooks.provideLexer(blockType) : (blockType ? _Lexer.lex : _Lexer.lexInline);
+        let tokens = lexer(src, opt);
         if (hooks) {
           tokens = hooks.processAllTokens(tokens);
         }
         if (opt.walkTokens) {
           this.walkTokens(tokens, opt.walkTokens);
         }
-        let html = hooks ? hooks.provideParser(blockType)(tokens, opt) : (blockType ? _Parser.parse : _Parser.parseInline)(tokens, opt);
+        const parser = hooks ? hooks.provideParser(blockType) : (blockType ? _Parser.parse : _Parser.parseInline);
+        let html = parser(tokens, opt);
         if (hooks) {
           html = hooks.postprocess(html);
         }
         return html;
       } catch(e) {
-        return this.onError(e as Error, silent, async);
+        return throwError(e as Error);
       }
     };
 
     return parse;
   }
 
-  private onError(e: Error, silent: boolean, async: boolean): string | Promise<string> {
-    e.message += '\nPlease report this to https://github.com/markedjs/marked.';
+  private onError(silent: boolean, async: boolean) {
+    return (e: Error): string | Promise<string> => {
+      e.message += '\nPlease report this to https://github.com/markedjs/marked.';
 
-    if (silent) {
-      const msg = '<p>An error occurred:</p><pre>'
-        + escapeHtmlEntities(e.message + '', true)
-        + '</pre>';
-      if (async) {
-        return Promise.resolve(msg);
+      if (silent) {
+        const msg = '<p>An error occurred:</p><pre>'
+          + escapeHtmlEntities(e.message + '', true)
+          + '</pre>';
+        if (async) {
+          return Promise.resolve(msg);
+        }
+        return msg;
       }
-      return msg;
-    }
 
-    if (async) {
-      return Promise.reject(e);
-    }
-    throw e;
+      if (async) {
+        return Promise.reject(e);
+      }
+      throw e;
+    };
   }
 }
