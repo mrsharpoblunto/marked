@@ -475,7 +475,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               position = leftoverLine + 1;
             }
           }
-          text = sourceText(text, 0, text.length - oldToken.text.length) + newToken.text;
+          text = text.slice(0, text.length - oldToken.text.length) + newToken.text;
 
           // A leftover quote line belongs to this blockquote.
           if (position < quoteEnd && execAt(this.rules.other.blockquoteStart, src, position)) {
@@ -500,7 +500,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               consumedEnd = Math.min(lineEnd(src, consumedEnd), quoteEnd) + 1;
             }
             rawEnd = consumedEnd - 1;
-            text += '\n' + sourceText(src, position, rawEnd);
+            text += '\n' + src.slice(position, rawEnd);
             position = consumedEnd;
           }
 
@@ -537,11 +537,25 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       const marker = bull === undefined ? src.charCodeAt(offset + markerEnd - 1) : bull.charCodeAt(bull.length - 1);
       const isordered = bull === undefined ? marker === 46 || marker === 41 : bull.length > 1;
 
+      let start: number | '' = '';
+      if (isordered) {
+        if (bull === undefined) {
+          let value = 0;
+          for (let i = listStart; i < listStart + markerEnd - 1; i++) {
+            const code = src.charCodeAt(i);
+            if (code !== 32) value = value * 10 + code - 48;
+          }
+          start = value;
+        } else {
+          start = +bull.slice(0, -1);
+        }
+      }
+
       const list: Tokens.List = {
         type: 'list',
         raw: '',
         ordered: isordered,
-        start: isordered ? +(bull === undefined ? sourceText(src, offset, offset + markerEnd - 1) : bull.slice(0, -1)) : '',
+        start,
         loose: false,
         items: [],
       };
@@ -739,16 +753,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         });
       }
 
-      // Do not consume newlines at end of final item.
+      // Do not consume trailing whitespace from the final item.
       const lastItem = list.items.at(-1);
-      if (lastItem) {
-        lastItem.raw = lastItem.raw.trimEnd();
-        lastItem.text = lastItem.text.trimEnd();
-      } else {
-        // not a list since there were no items
-        return;
-      }
-      list.raw = sourceText(src, listStart, offset).trimEnd();
+      if (!lastItem) return;
+      const lastItemStart = offset - lastItem.raw.length;
+      lastItem.raw = lastItem.raw.trimEnd();
+      lastItem.text = lastItem.text.trimEnd();
+      list.raw = sourceText(src, listStart, lastItemStart + lastItem.raw.length);
 
       // Item child tokens handled here at end because we needed to have the final item to trim it first
       // First pass: tokenize items and finalize list.loose from spacers before placing checkboxes

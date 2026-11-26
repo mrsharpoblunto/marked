@@ -39,11 +39,12 @@ type UserTokenizer = (src: string, ...args: unknown[]) => unknown;
 
 function adaptTokenizer(context: unknown, method: UserTokenizer, offsetIndex: number) {
   /** @hotIgnore User adapter: one source suffix and argument array per replaced tokenizer call. */
-  return function(src: string, ...args: unknown[]) {
+  function adapted(src: string, ...args: unknown[]) {
     const offset = args[offsetIndex] as number;
     args.length = offsetIndex;
     return method.call(context, src.slice(offset), ...args);
-  };
+  }
+  return adapted;
 }
 
 interface TokenizerDispatch<P, R> {

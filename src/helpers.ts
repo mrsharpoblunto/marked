@@ -1,4 +1,4 @@
-import { other } from './rules.ts';
+import { noopTest, other } from './rules.ts';
 
 /** @hotIgnore Output: at most one string for each token field. */
 export function sourceText(src: string, start: number, end: number): string {
@@ -16,6 +16,7 @@ export function execAt(rule: RegExp, src: string, offset: number): RegExpExecArr
   if (offset === 0) return rule.exec(src);
   let sticky = cursorRules.get(rule);
   if (!sticky) {
+    if (rule === noopTest) return null;
     if (typeof rule.source !== 'string' || rule.exec !== RegExp.prototype.exec) return execUserRule(rule, src, offset);
     // Remove start anchors while preserving escaped characters and classes.
     const pattern = rule.source.replace(/\\.|\[(?:\\.|[^\]\\])*\]|\^/g, part => part === '^' ? '' : part);

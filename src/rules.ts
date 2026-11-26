@@ -1,4 +1,4 @@
-const noopTest = { exec: () => null } as unknown as RegExp;
+export const noopTest = { exec: () => null } as unknown as RegExp;
 
 function cachedIndentRegex(createRegex: (indent: number) => RegExp) {
   const cache: RegExp[] = [];
