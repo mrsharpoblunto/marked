@@ -9,8 +9,6 @@ import type { CloserHints, InlineRuns } from './helpers.ts';
 import type { Token, TokensList, Tokens } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
 
-const standardEscapeMask = inline.normal.anyPunctuationOutsideCode;
-const standardBlockMask = inline.normal.blockSkip;
 const standardNoDelCloser = inline.normal.delRDelim;
 
 const tokenizerFlags = {
@@ -918,22 +916,6 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    */
   /** @hot */
   #maskSrc(src: string, hints: CloserHints | undefined, fullMask: boolean, runs?: InlineRuns): string {
-    const rules = this.tokenizer.rules.inline;
-    if (runs && hints && rules.anyPunctuationOutsideCode === standardEscapeMask && rules.blockSkip === standardBlockMask
-      && !src.includes('[') && !src.includes('<')) {
-      const ranges = runs.masks;
-      if (src.includes('\\') || src.includes('`')) {
-        let match: RegExpExecArray | null;
-        standardEscapeMask.lastIndex = 0;
-        while ((match = standardEscapeMask.exec(src))) {
-          const start = match.index;
-          const end = start + match[0].length;
-          if (match[2] || (match[1] && hasInlineDelimiter(src, start, end))) ranges.push(start, end);
-        }
-      }
-      scanInlineRuns(src, hints, ranges, runs);
-      return src;
-    }
     // String with links masked to avoid interference with em and strong
     let maskedSrc = src;
 
