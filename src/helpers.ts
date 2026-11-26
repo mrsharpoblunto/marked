@@ -277,21 +277,27 @@ export function lastCloser(src: string, delimiter: number): number {
   return delimiter === 42 ? hints.star : delimiter === 95 ? hints.underscore : hints.tilde;
 }
 
-export function expandTabs(line: string, indent = 0) {
+const tabPadding = ['', ' ', '  ', '   ', '    '];
+
+export function expandTabs(line: string, indent = 0): string {
+  let start = 0;
+  let tab = line.indexOf('\t');
+  if (tab === -1) return line;
+
   let col = indent;
   let expanded = '';
-  for (const char of line) {
-    if (char === '\t') {
-      const added = 4 - (col % 4);
-      expanded += ' '.repeat(added);
-      col += added;
-    } else {
-      expanded += char;
+  while (tab !== -1) {
+    for (let i = start; i < tab; i++) {
+      if (line.codePointAt(i)! > 0xffff) i++;
       col++;
     }
+    const added = 4 - (col % 4);
+    expanded += line.slice(start, tab) + tabPadding[added];
+    col += added;
+    start = tab + 1;
+    tab = line.indexOf('\t', start);
   }
-
-  return expanded;
+  return expanded + line.slice(start);
 }
 
 /**
@@ -300,35 +306,50 @@ export function expandTabs(line: string, indent = 0) {
  * so a tab there stays literal. Lines from the first list item on are returned as is, because
  * the item's columns and the fences inside it are not tracked here.
  */
-export function expandBlockquoteTabs(lines: string[]) {
-  let fence: { marker: string, depth: number } | undefined;
-  let inListItem = false;
-  return lines.map((line) => {
-    if (inListItem) {
-      return line;
-    }
-    const { depth, expanded, keptIndent, content } = splitBlockquoteLine(line, fence?.depth ?? Infinity);
-    if (fence?.depth !== depth) {
-      fence = undefined;
-    }
-    if (fence) {
-      const close = other.blockquoteFenceClose.exec(content)?.[1];
-      if (!close || close[0] !== fence.marker[0] || close.length < fence.marker.length) {
-        return keptIndent;
+export function expandBlockquoteTabs(src: string): string {
+  let fenceMarker = 0;
+  let fenceLength = 0;
+  let fenceDepth = Infinity;
+  let expanded = '';
+  let start = 0;
+  const part = { depth: 0, expanded: '', keptIndent: '', content: '' };
+  while (start <= src.length) {
+    let end = src.indexOf('\n', start);
+    if (end === -1) end = src.length;
+    if (start !== 0) expanded += '\n';
+    splitBlockquoteLine(src, start, end, fenceDepth, part);
+    if (fenceDepth !== part.depth) fenceMarker = 0;
+    if (fenceMarker) {
+      const close = other.blockquoteFenceClose.exec(part.content)?.[1];
+      if (!close || close.charCodeAt(0) !== fenceMarker || close.length < fenceLength) {
+        expanded += part.keptIndent;
+        start = end + 1;
+        continue;
       }
-      fence = undefined;
-      return expanded;
+      fenceMarker = 0;
+      fenceDepth = Infinity;
+    } else {
+      if (other.blockquoteListItemStart.test(part.content)) return expanded + src.slice(start);
+      const open = other.blockquoteFenceOpen.exec(part.content)?.[1];
+      if (open) {
+        fenceMarker = open.charCodeAt(0);
+        fenceLength = open.length;
+        fenceDepth = part.depth;
+      } else {
+        fenceDepth = Infinity;
+      }
     }
-    inListItem = other.blockquoteListItemStart.test(content);
-    if (inListItem) {
-      return line;
-    }
-    const open = other.blockquoteFenceOpen.exec(content)?.[1];
-    if (open) {
-      fence = { marker: open, depth };
-    }
-    return expanded;
-  }).join('\n');
+    expanded += part.expanded;
+    start = end + 1;
+  }
+  return expanded;
+}
+
+interface BlockquoteLine {
+  depth: number;
+  expanded: string;
+  keptIndent: string;
+  content: string;
 }
 
 /**
@@ -336,8 +357,8 @@ export function expandBlockquoteTabs(lines: string[]) {
  * content's first four columns of indentation expanded, `keptIndent` only the tab that the
  * optional space after the last marker cuts into, and `content` is what follows the markers.
  */
-function splitBlockquoteLine(line: string, maxDepth: number) {
-  let i = 0;
+function splitBlockquoteLine(src: string, start: number, end: number, maxDepth: number, part: BlockquoteLine): void {
+  let i = start;
   let col = 0;
   let depth = 0;
   let contentCol = 0;
@@ -346,43 +367,44 @@ function splitBlockquoteLine(line: string, maxDepth: number) {
   while (depth < maxDepth) {
     let j = i;
     let markerCol = col;
-    while (line[j] === ' ' || line[j] === '\t') {
-      markerCol += tabWidth(line[j], markerCol);
-      j++;
+    let code = src.charCodeAt(j);
+    while (j < end && (code === 32 || code === 9)) {
+      markerCol += tabWidth(code, markerCol);
+      code = src.charCodeAt(++j);
     }
-    if (line[j] !== '>' || markerCol - contentCol > 3) {
-      break;
-    }
+    if (j === end || code !== 62 || markerCol - contentCol > 3) break;
     prefix += ' '.repeat(markerCol - col) + '>';
     depth++;
     i = j + 1;
     col = markerCol + 1;
-    contentCol = line[i] === ' ' || line[i] === '\t' ? col + 1 : col;
+    code = src.charCodeAt(i);
+    contentCol = code === 32 || code === 9 ? col + 1 : col;
   }
 
+  part.depth = depth;
   if (depth === 0) {
-    return { depth, expanded: line, keptIndent: line, content: line };
+    part.expanded = part.keptIndent = part.content = src.slice(start, end);
+    return;
   }
 
   let indent = '';
   let keptIndent = '';
-  while ((line[i] === ' ' || line[i] === '\t') && col < contentCol + 4) {
-    const added = tabWidth(line[i], col);
-    indent += ' '.repeat(added);
-    keptIndent += col < contentCol && added > 1 ? ' '.repeat(added) : line[i];
+  let code = src.charCodeAt(i);
+  while (i < end && (code === 32 || code === 9) && col < contentCol + 4) {
+    const added = tabWidth(code, col);
+    indent += tabPadding[added];
+    keptIndent += col < contentCol && added > 1 ? tabPadding[added] : src[i];
     col += added;
-    i++;
+    code = src.charCodeAt(++i);
   }
 
-  const rest = line.slice(i);
-  return {
-    depth,
-    expanded: prefix + indent + rest,
-    keptIndent: prefix + keptIndent + rest,
-    content: ' '.repeat(Math.max(0, col - contentCol)) + rest,
-  };
+  const rest = src.slice(i, end);
+  part.expanded = prefix + indent + rest;
+  part.keptIndent = prefix + keptIndent + rest;
+  part.content = ' '.repeat(Math.max(0, col - contentCol)) + rest;
 }
 
-function tabWidth(char: string, col: number) {
-  return char === '\t' ? 4 - (col % 4) : 1;
+/** @hot */
+function tabWidth(code: number, col: number): number {
+  return code === 9 ? 4 - (col % 4) : 1;
 }

@@ -503,7 +503,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         let currentText = currentRaw;
         if (currentRaw.includes('\t')) {
           if (this.lexer.state.top && !this.lexer.state.inBlockquote) {
-            currentText = expandBlockquoteTabs(currentRaw.split('\n'));
+            currentText = expandBlockquoteTabs(currentRaw);
           }
           currentText = currentText.replace(
             this.rules.other.blockquoteMarkerWhitespace,
