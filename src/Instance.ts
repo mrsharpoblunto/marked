@@ -318,43 +318,27 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
 
   #lexer: _Lexer<ParserOutput, RendererOutput> | undefined;
   #parser: _Parser<ParserOutput, RendererOutput> | undefined;
-  #lexing = false;
-  #parsing = false;
+  #compiling = false;
 
-  #lexDefault(src: string, opt: MarkedOptions<ParserOutput, RendererOutput>, block: boolean) {
-    if (opt.tokenizer || opt.extensions || this.#lexing) {
-      return block ? _Lexer.lex(src, opt) : _Lexer.lexInline(src, opt);
-    }
-    const lexer = this.#lexer;
+  #compileDefault(src: string, options: MarkedOptions<ParserOutput, RendererOutput>, block: boolean) {
+    let lexer = this.#lexer;
     if (lexer) {
-      lexer.resetDefault(opt);
+      lexer.resetDefault(options);
     } else {
-      this.#lexer = new _Lexer(opt);
+      this.#lexer = lexer = new _Lexer(options);
     }
-    this.#lexing = true;
-    try {
-      return block ? this.#lexer!.lex(src) : this.#lexer!.inlineTokens(src);
-    } finally {
-      this.#lexer!.releaseDefault();
-      this.#lexing = false;
-    }
-  }
-
-  #parseDefault(tokens: Token[], opt: MarkedOptions<ParserOutput, RendererOutput>, block: boolean) {
-    if (opt.renderer || opt.extensions || opt.walkTokens || this.#parsing) {
-      return block ? _Parser.parse(tokens, opt) : _Parser.parseInline(tokens, opt);
-    }
-    const parser = this.#parser;
+    let parser = this.#parser;
     if (parser) {
-      parser.resetDefault(opt);
+      parser.resetDefault(options);
     } else {
-      this.#parser = new _Parser(opt);
+      this.#parser = parser = new _Parser(options);
     }
-    this.#parsing = true;
+    this.#compiling = true;
     try {
-      return block ? this.#parser!.parse(tokens) : this.#parser!.parseInline(tokens);
+      return block ? parser.parse(lexer.lex(src)) : parser.parseInline(lexer.inlineTokens(src));
     } finally {
-      this.#parsing = false;
+      lexer.releaseDefault();
+      this.#compiling = false;
     }
   }
 
@@ -370,20 +354,21 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
       const origOpt = { ...options };
       const opt = { ...this.defaults, ...origOpt };
 
-      const throwError = this.onError(!!opt.silent, !!opt.async);
+      const silent = !!opt.silent;
+      const async = !!opt.async;
 
       // throw error if an extension set async to true but parse was called with async: false
       if (this.defaults.async === true && origOpt.async === false) {
-        return throwError(new Error('marked(): The async option was set to true by an extension. Remove async: false from the parse options object to return a Promise.'));
+        return this.onError(new Error('marked(): The async option was set to true by an extension. Remove async: false from the parse options object to return a Promise.'), silent, async);
       }
 
       // throw error in case of non string input
       if (typeof src === 'undefined' || src === null) {
-        return throwError(new Error('marked(): input parameter is undefined or null'));
+        return this.onError(new Error('marked(): input parameter is undefined or null'), silent, async);
       }
       if (typeof src !== 'string') {
-        return throwError(new Error('marked(): input parameter is of type '
-          + Object.prototype.toString.call(src) + ', string expected'));
+        return this.onError(new Error('marked(): input parameter is of type '
+          + Object.prototype.toString.call(src) + ', string expected'), silent, async);
       }
 
       if (opt.hooks) {
@@ -397,60 +382,61 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
           const processedSrc = hooks ? await hooks.preprocess(src) : src;
           const tokens = hooks
             ? await (await hooks.provideLexer(blockType))(processedSrc, opt)
-            : await this.#lexDefault(processedSrc, opt, blockType);
+            : await (blockType ? _Lexer.lex : _Lexer.lexInline)(processedSrc, opt);
           const processedTokens = hooks ? await hooks.processAllTokens(tokens) : tokens;
           if (opt.walkTokens) {
             await Promise.all(this.walkTokens(processedTokens, opt.walkTokens));
           }
           const html = hooks
             ? await (await hooks.provideParser(blockType))(processedTokens, opt)
-            : await this.#parseDefault(processedTokens, opt, blockType);
+            : await (blockType ? _Parser.parse : _Parser.parseInline)(processedTokens, opt);
           return hooks ? await hooks.postprocess(html) : html;
-        })().catch(throwError);
+        })().catch(e => this.onError(e, silent, async));
       }
 
       try {
+        if (!hooks && !opt.tokenizer && !opt.renderer && !opt.extensions && !opt.walkTokens && !this.#compiling) {
+          return this.#compileDefault(src, opt, blockType);
+        }
         if (hooks) {
           src = hooks.preprocess(src) as string;
         }
-        let tokens = hooks ? hooks.provideLexer(blockType)(src, opt) : this.#lexDefault(src, opt, blockType);
+        let tokens = hooks ? hooks.provideLexer(blockType)(src, opt) : (blockType ? _Lexer.lex : _Lexer.lexInline)(src, opt);
         if (hooks) {
           tokens = hooks.processAllTokens(tokens);
         }
         if (opt.walkTokens) {
           this.walkTokens(tokens, opt.walkTokens);
         }
-        let html = hooks ? hooks.provideParser(blockType)(tokens, opt) : this.#parseDefault(tokens, opt, blockType);
+        let html = hooks ? hooks.provideParser(blockType)(tokens, opt) : (blockType ? _Parser.parse : _Parser.parseInline)(tokens, opt);
         if (hooks) {
           html = hooks.postprocess(html);
         }
         return html;
       } catch(e) {
-        return throwError(e as Error);
+        return this.onError(e as Error, silent, async);
       }
     };
 
     return parse;
   }
 
-  private onError(silent: boolean, async: boolean) {
-    return (e: Error): string | Promise<string> => {
-      e.message += '\nPlease report this to https://github.com/markedjs/marked.';
+  private onError(e: Error, silent: boolean, async: boolean): string | Promise<string> {
+    e.message += '\nPlease report this to https://github.com/markedjs/marked.';
 
-      if (silent) {
-        const msg = '<p>An error occurred:</p><pre>'
-          + escapeHtmlEntities(e.message + '', true)
-          + '</pre>';
-        if (async) {
-          return Promise.resolve(msg);
-        }
-        return msg;
-      }
-
+    if (silent) {
+      const msg = '<p>An error occurred:</p><pre>'
+        + escapeHtmlEntities(e.message + '', true)
+        + '</pre>';
       if (async) {
-        return Promise.reject(e);
+        return Promise.resolve(msg);
       }
-      throw e;
-    };
+      return msg;
+    }
+
+    if (async) {
+      return Promise.reject(e);
+    }
+    throw e;
   }
 }
