@@ -134,14 +134,9 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
 
         default: {
           if (extended === 1) break;
-          const errMsg = 'Token with "' + token.type + '" type was not found.';
-          if (this.options.silent) {
-            console.error(errMsg);
-            output.html = previous;
-            return;
-          } else {
-            throw new Error(errMsg);
-          }
+          reportMissingToken(token.type, !!this.options.silent);
+          output.html = previous;
+          return;
         }
       }
     }
@@ -244,14 +239,9 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
         }
         default: {
           if (extended === 1) break;
-          const errMsg = 'Token with "' + token.type + '" type was not found.';
-          if (this.options.silent) {
-            console.error(errMsg);
-            output.html = previous;
-            return;
-          } else {
-            throw new Error(errMsg);
-          }
+          reportMissingToken(token.type, !!this.options.silent);
+          output.html = previous;
+          return;
         }
       }
     }
@@ -270,4 +260,14 @@ function renderExtension<P, R>(
   if (text === false) return 1;
   emit(output, text ?? '');
   return 2;
+}
+
+/** @hotIgnore Output: one message and at most one Error per unknown token. */
+function reportMissingToken(type: string, silent: boolean): void {
+  const message = 'Token with "' + type + '" type was not found.';
+  if (silent) {
+    console.error(message);
+  } else {
+    throw new Error(message);
+  }
 }

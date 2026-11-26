@@ -38,24 +38,23 @@ function countCodePoints(text: string) {
  * code span is not an escape.
  */
 function unescapeLinkLabel(label: string, rules: Rules): string {
+  if (label.indexOf('\\') === -1) return label;
+  let start = 0;
   let result = '';
   for (let i = 0; i < label.length; i++) {
-    if (label[i] === '`') {
+    const first = label.charCodeAt(i);
+    if (first === 96) {
       const code = execAt(rules.inline.code, label, i);
-      if (code) {
-        result += code[0];
-        i += code[0].length - 1;
-        continue;
+      if (code) i += code[0].length - 1;
+    } else if (first === 92) {
+      const next = label.charCodeAt(i + 1);
+      if (next === 91 || next === 93) {
+        result += label.slice(start, i);
+        start = ++i;
       }
     }
-    if (label[i] === '\\' && (label[i + 1] === '[' || label[i + 1] === ']')) {
-      result += label[i + 1];
-      i++;
-      continue;
-    }
-    result += label[i];
   }
-  return result;
+  return start === 0 ? label : result + label.slice(start);
 }
 
 /** @hot */
@@ -90,57 +89,63 @@ function outputLink(cap: string[], href: string, linkTitle: string | null | unde
   return isImage ? createImage(raw, href, title, text, tokens) : createLink(raw, href, title, text, tokens, false);
 }
 
-function indentCodeCompensation(raw: string, text: string, rules: Rules, canExpandTabs: boolean) {
-  const matchIndentToCode = raw.match(rules.other.indentCodeCompensation);
+function indentCodeCompensation(raw: string, text: string, canExpandTabs: boolean): string {
+  const indent = skipSpaces(raw, 3);
+  const marker = raw.charCodeAt(indent);
+  if (indent === 0 || (marker !== 96 && marker !== 126)
+    || raw.charCodeAt(indent + 1) !== marker || raw.charCodeAt(indent + 2) !== marker) return text;
 
-  if (matchIndentToCode === null) {
-    return text;
-  }
-
-  const indent = matchIndentToCode[1].length;
-
-  return text
-    .split('\n')
-    .map(node => {
-      const matchIndentInNode = node.match(rules.other.beginningSpace);
-      if (matchIndentInNode === null) {
-        return node;
-      }
-
-      const [indentInNode] = matchIndentInNode;
-      const tab = indentInNode.indexOf('\t');
-      if (tab !== -1 && tab < indent) {
+  let result = '';
+  let copyStart = 0;
+  let start = 0;
+  while (start < text.length) {
+    let next = start;
+    let padding = 0;
+    while (next - start < indent) {
+      const code = text.charCodeAt(next);
+      if (code === 32) {
+        next++;
+      } else if (code === 9) {
         if (canExpandTabs) {
-          // The fence indent is at most three spaces. A tab within that indent
-          // reaches column four, leaving the remaining columns as code content.
-          return ' '.repeat(4 - indent) + node.slice(tab + 1);
+          next++;
+          padding = 4 - indent;
+          break;
         }
-        // Container tokens lack the original tab column. Keep their existing
-        // behavior for lines whose indentation ends inside a tab.
-        if (raw[indent] === '~') {
-          return node;
+        if (marker === 126) {
+          next = start;
+          break;
         }
+        next++;
+      } else {
+        break;
       }
-
-      // Up to the fence's own indentation is removed from each line, so a line
-      // indented less than the fence loses whatever indentation it has.
-      return node.slice(Math.min(indentInNode.length, indent));
-    })
-    .join('\n');
+    }
+    if (next > start) {
+      result += text.slice(copyStart, start);
+      if (padding) result += ' '.repeat(padding);
+      copyStart = next;
+    }
+    const end = text.indexOf('\n', next);
+    if (end < 0) break;
+    start = end + 1;
+  }
+  return copyStart === 0 ? text : result + text.slice(copyStart);
 }
 
+/** @hot */
 function isLabelEndInsideToken(src: string, label: string, labelStart: number, rules: Rules) {
   if (!label.includes('<')) {
     return false;
   }
 
   for (let i = 0; i < label.length; i++) {
-    if (label[i] === '\\') {
+    const first = label.charCodeAt(i);
+    if (first === 92) {
       i++;
       continue;
     }
 
-    if (label[i] === '`') {
+    if (first === 96) {
       const code = execAt(rules.inline.code, label, i);
       if (code) {
         i += code[0].length - 1;
@@ -148,7 +153,7 @@ function isLabelEndInsideToken(src: string, label: string, labelStart: number, r
       }
     }
 
-    if (label[i] !== '<') {
+    if (first !== 60) {
       continue;
     }
 
@@ -189,6 +194,7 @@ function firstListMarkerEnd(src: string, offset: number): number {
   return end === src.length || next === 9 || next === 10 || next === 32 ? end - offset : 0;
 }
 
+/** @hot */
 function listMarkerEnd(src: string, offset: number, marker: number, ordered: boolean, pedantic: boolean): number {
   let end = offset;
   while (end < offset + 3 && src.charCodeAt(end) === 32) end++;
@@ -210,6 +216,7 @@ function listMarkerEnd(src: string, offset: number, marker: number, ordered: boo
   return end === src.length || next === 9 || next === 10 || next === 32 ? end - offset : 0;
 }
 
+/** @hot */
 function lineEnd(src: string, start: number): number {
   const end = src.indexOf('\n', start);
   return end === -1 ? src.length : end;
@@ -345,6 +352,26 @@ function hasTwoLineFeeds(src: string): boolean {
   return false;
 }
 
+/** @hot */
+function rawTagNameMatches(raw: string, start: number): boolean {
+  let length = 0;
+  const first = raw.charCodeAt(start) | 32;
+  if (first === 112 && (raw.charCodeAt(start + 1) | 32) === 114 && (raw.charCodeAt(start + 2) | 32) === 101) {
+    length = 3;
+  } else if (first === 107 && (raw.charCodeAt(start + 1) | 32) === 98 && (raw.charCodeAt(start + 2) | 32) === 100) {
+    length = 3;
+  } else if (first === 99 && (raw.charCodeAt(start + 1) | 32) === 111
+    && (raw.charCodeAt(start + 2) | 32) === 100 && (raw.charCodeAt(start + 3) | 32) === 101) {
+    length = 4;
+  } else if (first === 115 && (raw.charCodeAt(start + 1) | 32) === 99
+    && (raw.charCodeAt(start + 2) | 32) === 114 && (raw.charCodeAt(start + 3) | 32) === 105
+    && (raw.charCodeAt(start + 4) | 32) === 112 && (raw.charCodeAt(start + 5) | 32) === 116) {
+    length = 6;
+  }
+  const next = raw.charCodeAt(start + length);
+  return length !== 0 && (next === 62 || isStringWhitespace(next));
+}
+
 /**
  * Tokenizer
  */
@@ -362,6 +389,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   spaceAt(src: string, offset: number): Tokens.Space | undefined {
     let end = offset;
     let pos = offset;
@@ -386,6 +414,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   codeAt(src: string, offset: number): Tokens.Code | undefined {
     const cap = execAt(this.rules.block.code, src, offset);
     if (cap) {
@@ -402,11 +431,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   fencesAt(src: string, offset: number): Tokens.Code | undefined {
     const cap = execAt(this.rules.block.fences, src, offset);
     if (cap) {
       const raw = cap[0];
-      let text = indentCodeCompensation(raw, cap[3] || '', this.rules, this.lexer.state.top && !this.lexer.state.inBlockquote);
+      let text = indentCodeCompensation(raw, cap[3] || '', this.lexer.state.top && !this.lexer.state.inBlockquote);
       // The fence pattern consumes the final content newline outside the capture.
       // Keep it when the captured content ends in a blank line.
       if (cap[3] !== undefined && (text === '' || text.endsWith('\n'))) {
@@ -422,6 +452,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   headingAt(src: string, offset: number): Tokens.Heading | undefined {
     const cap = execAt(this.rules.block.heading, src, offset);
     if (cap) {
@@ -444,6 +475,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   hrAt(src: string, offset: number): Tokens.Hr | undefined {
     let end = offset;
     while (end < offset + 3 && src.charCodeAt(end) === 32) end++;
@@ -909,6 +941,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   htmlAt(src: string, offset: number): Tokens.HTML | undefined {
     const cap = execAt(this.rules.block.html, src, offset);
     if (cap) {
@@ -1013,6 +1046,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   lheadingAt(src: string, offset: number): Tokens.Heading | undefined {
     const cap = execAt(this.rules.block.lheading, src, offset);
     if (cap) {
@@ -1027,6 +1061,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   paragraphAt(src: string, offset: number): Tokens.Paragraph | undefined {
     const rule = this.rules.block.paragraph;
     let raw: string;
@@ -1040,7 +1075,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       raw = cap[0];
       text = cap[1];
       if (text.charCodeAt(text.length - 1) === 10) {
-        text = text.slice(0, -1);
+        text = sourceText(text, 0, text.length - 1);
       }
     }
     return createParagraph(raw, text, this.lexer.inline(text));
@@ -1051,6 +1086,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   textAt(src: string, offset: number): Tokens.Text | undefined {
     const cap = execAt(this.rules.block.text, src, offset);
     if (cap) {
@@ -1060,7 +1096,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       // up to the next blank line
       const continuation = execAt(this.rules.other.textIndentedContinuation, src, offset + raw.length);
       if (continuation) {
-        raw += continuation[0];
+        raw = sourceText(src, offset, offset + raw.length + continuation[0].length);
         text += continuation[0].replace(this.rules.other.codeRemoveIndent, '');
       }
       return createText(raw, text, this.lexer.inline(text));
@@ -1091,15 +1127,16 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (src.charCodeAt(offset) !== 60) return; // <
     const cap = execAt(this.rules.inline.tag, src, offset);
     if (cap) {
-      if (!this.lexer.state.inLink && this.rules.other.startATag.test(cap[0])) {
-        this.lexer.state.inLink = true;
-      } else if (this.lexer.state.inLink && this.rules.other.endATag.test(cap[0])) {
-        this.lexer.state.inLink = false;
+      const raw = cap[0];
+      const state = this.lexer.state;
+      const closing = raw.charCodeAt(1) === 47;
+      const name = closing ? 2 : 1;
+      if ((raw.charCodeAt(name) | 32) === 97) {
+        if (!state.inLink && !closing && raw.charCodeAt(2) === 32) state.inLink = true;
+        else if (state.inLink && closing && raw.charCodeAt(3) === 62) state.inLink = false;
       }
-      if (!this.lexer.state.inRawBlock && this.rules.other.startPreScriptTag.test(cap[0])) {
-        this.lexer.state.inRawBlock = true;
-      } else if (this.lexer.state.inRawBlock && this.rules.other.endPreScriptTag.test(cap[0])) {
-        this.lexer.state.inRawBlock = false;
+      if (state.inRawBlock === closing && rawTagNameMatches(raw, name)) {
+        state.inRawBlock = !closing;
       }
 
       return createHtml(cap[0], this.lexer.state.inLink, this.lexer.state.inRawBlock);

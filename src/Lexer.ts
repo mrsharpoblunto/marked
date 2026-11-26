@@ -156,7 +156,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       this.#replaced = dispatch.replaced;
     }
     this.#extensions = this.options.extensions;
-    this.#defaultKinds = !suppliedTokenizer && !this.#extensions;
+    this.#defaultKinds = !suppliedTokenizer && !this.#extensions && !this.options.hooks;
     this.#maskHook = this.options.hooks ? hookSlots(this.options.hooks).emStrongMask : undefined;
     this.tokenizer.options = this.options;
     this.tokenizer.lexer = this;
@@ -831,7 +831,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     return maskedSrc;
   }
 
-  /** @hotIgnore Only runs when tokenization fails to advance. */
+  /** @hotIgnore Output: one message and at most one Error per stalled lex. */
   private infiniteLoopError(byte: number) {
     const errMsg = 'Infinite loop on byte: ' + byte;
     if (this.options.silent) {

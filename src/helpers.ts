@@ -165,6 +165,7 @@ export function withoutTrailingNewlines(src: string): string {
   return sourceText(src, 0, end);
 }
 
+/** @hot */
 export function trimTrailingBlankLines(str: string) {
   let lineEnd = str.length;
   let blankLines = 0;
