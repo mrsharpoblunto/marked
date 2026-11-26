@@ -480,29 +480,38 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         continue;
       }
 
+      const firstCode = src.charCodeAt(0);
       // escape
-      if (token = this.tokenizer.escape(src)) {
+      if ((firstCode === 92
+        || this.tokenizer.escape !== _Tokenizer.prototype.escape)
+        && (token = this.tokenizer.escape(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
       }
 
       // tag
-      if (token = this.tokenizer.tag(src)) {
+      if ((firstCode === 60
+        || this.tokenizer.tag !== _Tokenizer.prototype.tag)
+        && (token = this.tokenizer.tag(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
       }
 
       // link
-      if (token = this.tokenizer.link(src)) {
+      if ((firstCode === 91 || firstCode === 33
+        || this.tokenizer.link !== _Tokenizer.prototype.link)
+        && (token = this.tokenizer.link(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
       }
 
       // reflink, nolink
-      if (token = this.tokenizer.reflink(src, this.tokens.links)) {
+      if ((firstCode === 91 || firstCode === 33
+        || this.tokenizer.reflink !== _Tokenizer.prototype.reflink)
+        && (token = this.tokenizer.reflink(src, this.tokens.links))) {
         src = src.substring(token.raw.length);
         const lastToken = tokens.at(-1);
         if (token.type === 'text' && lastToken?.type === 'text') {
@@ -518,7 +527,6 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // anywhere ahead in maskedSrc, every opener position fails identically
       // and the outer loop walks the run char-by-char, giving O(n^2) time.
       // Consume the whole run as literal text in one step.
-      const firstCode = src.charCodeAt(0);
       if (firstCode === 42 || firstCode === 95) {
         const pos = maskedSrc.length - src.length;
         const lastCloser = cachedLastPossibleEmStrongCloserIndex(this.tokenizer, maskedSrc, firstCode);
@@ -560,42 +568,58 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       }
 
       // em & strong
-      if (token = this.tokenizer.emStrong(src, maskedSrc, prevChar)) {
+      if ((firstCode === 42 || firstCode === 95
+        || this.tokenizer.emStrong !== _Tokenizer.prototype.emStrong)
+        && (token = this.tokenizer.emStrong(src, maskedSrc, prevChar))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
       }
 
       // code
-      if (token = this.tokenizer.codespan(src)) {
+      if ((firstCode === 96
+        || this.tokenizer.codespan !== _Tokenizer.prototype.codespan)
+        && (token = this.tokenizer.codespan(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
       }
 
       // br
-      if (token = this.tokenizer.br(src)) {
+      if ((firstCode === 32 || firstCode === 92 || firstCode === 10
+        || this.tokenizer.br !== _Tokenizer.prototype.br)
+        && (token = this.tokenizer.br(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
       }
 
       // del (gfm)
-      if (token = this.tokenizer.del(src, maskedSrc, prevChar)) {
+      if ((firstCode === 126
+        || this.tokenizer.del !== _Tokenizer.prototype.del)
+        && (token = this.tokenizer.del(src, maskedSrc, prevChar))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
       }
 
       // autolink
-      if (token = this.tokenizer.autolink(src)) {
+      if ((firstCode === 60
+        || this.tokenizer.autolink !== _Tokenizer.prototype.autolink)
+        && (token = this.tokenizer.autolink(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
       }
 
       // url (gfm)
-      if (!this.state.inLink && (token = this.tokenizer.url(src))) {
+      if (!this.state.inLink
+        && ((this.options.gfm && !this.options.pedantic
+          && ((firstCode >= 65 && firstCode <= 90) || (firstCode >= 97 && firstCode <= 122)
+            || (firstCode >= 48 && firstCode <= 57) || firstCode === 46 || firstCode === 95
+            || firstCode === 43 || firstCode === 45))
+          || this.tokenizer.url !== _Tokenizer.prototype.url)
+        && (token = this.tokenizer.url(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
