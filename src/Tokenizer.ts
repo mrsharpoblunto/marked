@@ -193,6 +193,11 @@ function isLabelEndInsideToken(src: string, label: string, labelStart: number, r
 }
 
 const standardListRule = block.normal.list;
+const standardListInterrupt = other.listInterruptsParagraph;
+const standardListHr = other.hrRegex;
+const standardNestedMarkers = other.nestedBlockMarker;
+const standardContainerMarkers = other.nestedContainerMarkers;
+const standardQuoteRule = block.normal.blockquote;
 const standardCodeRule = block.normal.code;
 const standardFenceRule = block.normal.fences;
 const noFenceRule = block.pedantic.fences;
@@ -404,7 +409,7 @@ function tableBodyEnd(src: string, first: number): number {
 }
 
 /** @hot */
-function paragraphEnd(src: string, offset: number, pedantic: boolean, gfm: boolean): number {
+function paragraphEnd(src: string, offset: number, pedantic: boolean, gfm: boolean, inQuote = false): number {
   let end = blockLineEnd(src, offset);
   while (end < src.length) {
     const start = end + 1;
@@ -441,6 +446,7 @@ function paragraphEnd(src: string, offset: number, pedantic: boolean, gfm: boole
         while (rest < src.length && src.charCodeAt(rest) !== 10 && src.charCodeAt(rest) !== 96) rest++;
         if (rest === src.length || src.charCodeAt(rest) === 10) break;
       }
+      if (inQuote && firstListMarkerEnd(src, start)) break;
       let bulletEnd = content;
       if (marker === 42 || marker === 43 || marker === 45) bulletEnd++;
       else if (marker === 49 && (src.charCodeAt(content + 1) === 46 || src.charCodeAt(content + 1) === 41)) bulletEnd += 2;
@@ -463,6 +469,25 @@ function paragraphEnd(src: string, offset: number, pedantic: boolean, gfm: boole
 }
 
 /** @hot */
+function quotedBlockEnd(src: string, offset: number): number {
+  let line = offset;
+  let marker = quoteMarkerAt(src, line);
+  while (marker >= 0) {
+    let content = marker + 1;
+    if (src.charCodeAt(content) === 32) content++;
+    const first = blockContentStart(src, content);
+    const blank = first === src.length || src.charCodeAt(first) === 10;
+    const indented = line === offset && src.charCodeAt(content) === 32
+      && src.charCodeAt(content + 1) === 32 && src.charCodeAt(content + 2) === 32 && src.charCodeAt(content + 3) === 32;
+    const end = blank || indented ? blockLineEnd(src, content) : paragraphEnd(src, content, false, false, true);
+    if (end === src.length) return end;
+    line = end + 1;
+    marker = quoteMarkerAt(src, line);
+  }
+  return line;
+}
+
+/** @hot */
 function firstListMarkerEnd(src: string, offset: number): number {
   let end = offset;
   while (end < offset + 3 && src.charCodeAt(end) === 32) end++;
@@ -478,6 +503,61 @@ function firstListMarkerEnd(src: string, offset: number): number {
 
   const next = src.charCodeAt(++end);
   return end === src.length || next === 9 || next === 10 || next === 32 ? end - offset : 0;
+}
+
+/** @hot */
+function listInterruptsParagraph(src: string, start: number, after: number): boolean {
+  if (after <= start) return false;
+  let pos = start;
+  while (src.charCodeAt(pos) === 32) pos++;
+  const marker = src.charCodeAt(pos);
+  if (marker !== 42 && marker !== 43 && marker !== 45 && (marker !== 49 || after - pos !== 2)) return false;
+  if (src.charCodeAt(after) !== 32 && src.charCodeAt(after) !== 9) return false;
+  const content = blockContentStart(src, after);
+  return content < src.length && src.charCodeAt(content) !== 10;
+}
+
+/** @hot */
+function listHasHr(src: string, start: number, maxIndent: number): boolean {
+  let marker = start;
+  while (marker - start < maxIndent && src.charCodeAt(marker) === 32) marker++;
+  const code = src.charCodeAt(marker);
+  return (code === 45 || code === 42 || code === 95) && thematicBreakEnd(src, marker) >= 0;
+}
+
+/** @hot */
+function nestedMarkerEnd(src: string, start: number, multi: boolean): number {
+  let marker = start;
+  while (marker - start < 3 && src.charCodeAt(marker) === 32) marker++;
+  if (src.charCodeAt(marker) === 62) {
+    const next = src.charCodeAt(marker + 1);
+    return next === 32 || (multi && next === 9) ? marker + 2 : marker + 1;
+  }
+  const length = firstListMarkerEnd(src, start);
+  if (!length) return start;
+  const end = start + length;
+  const after = src.charCodeAt(end);
+  if (multi) return after === 32 || after === 9 ? blockContentStart(src, end) : start;
+  return after === 32 ? end + 1 : end === src.length ? end : start;
+}
+
+/** @hot */
+function lineHasFence(src: string, start: number): boolean {
+  const markerAt = start + skipSpacesAt(src, start, 3);
+  const marker = src.charCodeAt(markerAt);
+  if (marker !== 96 && marker !== 126) return false;
+  let end = fenceMarkerEnd(src, markerAt);
+  if (end - markerAt < 3) return false;
+  if (marker === 126) return true;
+  while (end < src.length && src.charCodeAt(end) !== 96) end++;
+  return end === src.length;
+}
+
+/** @hot */
+function skipSpacesAt(src: string, start: number, maximum: number): number {
+  let end = start;
+  while (end - start < maximum && src.charCodeAt(end) === 32) end++;
+  return end - start;
 }
 
 /** @hot */
@@ -930,9 +1010,11 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
   /** @internal */
   blockquoteAt(src: string, offset: number): Tokens.Blockquote | undefined {
-    const cap = execAt(this.rules.block.blockquote, src, offset, this.rules.cursor?.block.blockquote);
-    if (cap) {
-      let quoteEnd = offset + cap[0].length;
+    const rule = this.rules.block.blockquote;
+    let quoteEnd = rule === standardQuoteRule
+      ? quotedBlockEnd(src, offset)
+      : offset + (execAt(rule, src, offset, this.rules.cursor?.block.blockquote)?.[0].length ?? 0);
+    if (quoteEnd > offset) {
       while (src.charCodeAt(quoteEnd - 1) === 10) quoteEnd--;
       let position = offset;
       let rawEnd = offset;
@@ -1078,7 +1160,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       // Inside a list item, paragraph lines are lexed as text tokens, so a list after one would
       // interrupt the paragraph. Only a non-empty list starting with a bullet or 1 can do that
       if (!this.options.pedantic && this.lexer.state.lastToken?.type === 'text'
-        && !execAt(this.rules.other.listInterruptsParagraph, src, offset, this.rules.cursor?.other.listInterruptsParagraph)) {
+        && !(this.rules.other.listInterruptsParagraph === standardListInterrupt
+          ? listInterruptsParagraph(src, offset, offset + markerEnd)
+          : execAt(this.rules.other.listInterruptsParagraph, src, offset, this.rules.cursor?.other.listInterruptsParagraph))) {
         return;
       }
 
@@ -1113,7 +1197,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           break;
         }
 
-        if (execAt(this.rules.block.hr, src, offset, this.rules.cursor?.block.hr)) {
+        if (this.rules.block.hr === standardHrRule
+          ? listHasHr(src, offset, 3)
+          : execAt(this.rules.block.hr, src, offset, this.rules.cursor?.block.hr)) {
           break;
         }
 
@@ -1155,7 +1241,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
         if (!endEarly) {
           const maxIndent = Math.max(0, Math.min(3, indent - 1));
-          const hrRegex = this.rules.other.hrRegex(indent);
+          const hrRegex = this.rules.other.hrRegex === standardListHr ? undefined : this.rules.other.hrRegex(indent);
           const htmlBeginRegex = this.rules.other.htmlBeginRegex(indent);
 
           // A lazy line continues a paragraph, so it is not checked for the start of a block
@@ -1173,7 +1259,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
             }
 
             // Horizontal rule found
-            if (hrRegex.test(nextLine)) {
+            if (hrRegex ? hrRegex.test(nextLine) : listHasHr(nextLine, 0, maxIndent)) {
               break;
             }
 
@@ -1196,10 +1282,15 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               const previous = sourceText(line, lineIndent, line.length);
               let lastBlock = previous;
               if (!this.options.pedantic && !itemContents.includes('\n') && !previous.includes('\t')) {
-                let marker;
-                while (!hrRegex.test(lastBlock) && (marker = this.rules.other.nestedBlockMarker.exec(lastBlock))) {
-                  lastBlock = lastBlock.slice(marker[0].length);
+                let nested = 0;
+                while (!(hrRegex ? hrRegex.test(sourceText(lastBlock, nested, lastBlock.length)) : listHasHr(lastBlock, nested, maxIndent))) {
+                  const after = this.rules.other.nestedBlockMarker === standardNestedMarkers
+                    ? nestedMarkerEnd(lastBlock, nested, false)
+                    : nested + (this.rules.other.nestedBlockMarker.exec(sourceText(lastBlock, nested, lastBlock.length))?.[0].length ?? 0);
+                  if (after === nested) break;
+                  nested = after;
                 }
+                if (nested) lastBlock = sourceText(lastBlock, nested, lastBlock.length);
                 if (trimStartOffset(lastBlock, 0, lastBlock.length) === lastBlock.length) { // empty list item or block quote
                   break;
                 }
@@ -1215,24 +1306,42 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               if (htmlBeginRegex.test(lastBlock)) {
                 break;
               }
-              if (hrRegex.test(lastBlock)) {
+              if (hrRegex ? hrRegex.test(lastBlock) : listHasHr(lastBlock, 0, maxIndent)) {
                 break;
               }
               if (!this.options.pedantic && !lineIsLazy) {
                 // `line` is relative to the item content, so a block on it can be indented up to 3 spaces whatever
                 // the item indent is. A nested list item or blockquote on it, as in `- # heading` or `> ---`, holds
                 // a block that a lazy line cannot continue either, so check what follows those markers too.
-                const lastBlockLine = previous.replace(this.rules.other.nestedContainerMarkers, '');
-                if (this.rules.block.fences.test(lastBlockLine) || this.rules.block.heading.test(lastBlockLine) || this.rules.block.hr.test(lastBlockLine)) {
-                  break;
+                let nested = 0;
+                let content = previous;
+                if (this.rules.other.nestedContainerMarkers === standardContainerMarkers) {
+                  for (;;) {
+                    const after = nestedMarkerEnd(previous, nested, true);
+                    if (after === nested) break;
+                    nested = after;
+                  }
+                } else {
+                  content = previous.replace(this.rules.other.nestedContainerMarkers, '');
+                }
+                const standardStarts = this.rules.block.fences === standardFenceRule
+                  && this.rules.block.heading === standardHeadingRule && this.rules.block.hr === standardHrRule;
+                if (standardStarts) {
+                  const heading = nested + skipSpacesAt(content, nested, 3);
+                  if (lineHasFence(content, nested) || headingMarkerEnd(content, heading, false) !== heading || listHasHr(content, nested, 3)) break;
+                } else {
+                  const suffix = sourceText(content, nested, content.length);
+                  if (this.rules.block.fences.test(suffix) || this.rules.block.heading.test(suffix) || this.rules.block.hr.test(suffix)) break;
                 }
               }
 
               // A lazy continuation can look like a setext underline after
               // list indentation is removed. Keep it in the paragraph.
               const setextContinuation = !this.options.pedantic
-                && /^ {0,3}(?:=+|-+) *$/.test(nextLine)
-                && this.rules.block.lheading.test(`${previous}\n${nextLine}`);
+                && setextUnderlineStart(nextLine, 0, true) >= 0
+                && (this.rules.block.lheading === standardSetextRule || this.rules.block.lheading === gfmSetextRule
+                  ? setextTextEnd(`${previous}\n${nextLine}`, 0, this.rules.block.lheading === gfmSetextRule, false) >= 0
+                  : this.rules.block.lheading.test(`${previous}\n${nextLine}`));
               const continuation = setextContinuation
                 ? `    ${nextLineWithoutTabs.replace(/^ {0,3}/, '')}`
                 : nextLine;
