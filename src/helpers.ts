@@ -165,30 +165,63 @@ export function startCloserScan(rule: RegExp, src: string, start: number, prepar
  * Helpers
  */
 /** @hot */
-function getEscapeReplacement(ch: string): string {
-  switch (ch.charCodeAt(0)) {
+function getEscapeReplacement(code: number): string {
+  switch (code) {
     case 38: return '&amp;';
     case 60: return '&lt;';
     case 62: return '&gt;';
     case 34: return '&quot;';
     case 39: return '&#39;';
-    default: return ch;
+    default: return '';
   }
 }
 
 /** @hot */
-export function escapeHtmlEntities(html: string, encode?: boolean) {
-  if (encode) {
-    if (other.escapeTest.test(html)) {
-      return html.replace(other.escapeReplace, getEscapeReplacement);
+function htmlEntityEnd(html: string, offset: number): number {
+  let end = offset;
+  if (html.charCodeAt(end) === 35) {
+    end++;
+    const hex = (html.charCodeAt(end) | 32) === 120;
+    if (hex) end++;
+    const digits = end;
+    const limit = digits + (hex ? 6 : 7);
+    while (end < limit && end < html.length) {
+      const code = html.charCodeAt(end);
+      const lower = code | 32;
+      if ((code < 48 || code > 57) && (!hex || lower < 97 || lower > 102)) break;
+      end++;
     }
-  } else {
-    if (other.escapeTestNoEncode.test(html)) {
-      return html.replace(other.escapeReplaceNoEncode, getEscapeReplacement);
-    }
+    return end > digits && html.charCodeAt(end) === 59 ? end : -1;
   }
+  while (end < html.length) {
+    const code = html.charCodeAt(end);
+    const lower = code | 32;
+    if (code !== 95 && (code < 48 || code > 57) && (lower < 97 || lower > 122)) break;
+    end++;
+  }
+  return end > offset && html.charCodeAt(end) === 59 ? end : -1;
+}
 
-  return html;
+/** @hot */
+export function escapeHtmlEntities(html: string, encode?: boolean) {
+  let result = '';
+  let start = 0;
+  for (let i = 0; i < html.length; i++) {
+    const code = html.charCodeAt(i);
+    if (code > 62) continue;
+    const replacement = getEscapeReplacement(code);
+    if (!replacement) continue;
+    if (code === 38 && !encode) {
+      const end = htmlEntityEnd(html, i + 1);
+      if (end >= 0) {
+        i = end;
+        continue;
+      }
+    }
+    result += sourceText(html, start, i) + replacement;
+    start = i + 1;
+  }
+  return start ? result + sourceText(html, start, html.length) : html;
 }
 
 /**
