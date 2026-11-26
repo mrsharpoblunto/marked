@@ -4,10 +4,13 @@ import { _Tokenizer } from './Tokenizer.ts';
 import { _defaults } from './defaults.ts';
 import { other, block, inline, type Rules } from './rules.ts';
 import { callMaskHook, hookSlots } from './HookDispatch.ts';
-import { execAt, normalizeLabel, preparedLexerRules, scanCloserHints, sourceText } from './helpers.ts';
-import type { CloserHints } from './helpers.ts';
+import { execAt, normalizeLabel, preparedLexerRules, scanCloserHints, scanInlineRuns, sourceText } from './helpers.ts';
+import type { CloserHints, InlineRuns } from './helpers.ts';
 import type { Token, TokensList, Tokens } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
+
+const standardEscapeMask = inline.normal.anyPunctuationOutsideCode;
+const standardBlockMask = inline.normal.blockSkip;
 
 const tokenizerFlags = {
   space: 1 << 0,
@@ -143,6 +146,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   #replaced = 0;
   #defaultKinds: boolean;
   #closers = { star: -1, underscore: -1, tilde: -1 };
+  #runTables: InlineRuns[] = [];
+  #runDepth = 0;
   #blockMasks: number[] | undefined;
   #maskHook: ((src: string) => string) | undefined;
   #extensions: Pick<NonNullable<MarkedOptions['extensions']>, 'block' | 'inline' | 'startBlock' | 'startInline'> | null | undefined;
@@ -604,17 +609,33 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     // ~ to start. Skip building it for a run without one, unless a custom
     // tokenizer or an emStrongMask hook may read it.
     const hasDelimiter = src.includes('*') || src.includes('_') || src.includes('~');
-    const fullMask = !!this.#maskHook || !!(this.#replaced & (tokenizerFlags.emStrong | tokenizerFlags.del));
+    const rules = this.tokenizer.rules;
+    const cursor = rules.cursor?.inline;
+    const fullMask = !!this.#maskHook || !!(this.#replaced & (tokenizerFlags.emStrong | tokenizerFlags.del))
+      || cursor?.star.original !== rules.inline.emStrongRDelimAst
+      || cursor?.underscore.original !== rules.inline.emStrongRDelimUnd
+      || (rules.inline.delRDelim !== inline.normal.delRDelim && cursor?.tilde?.original !== rules.inline.delRDelim);
     if (!hasDelimiter) {
-      return this.#tokenizeInlines(src, fullMask ? this.#maskSrc(src, undefined, true) : src, tokens);
+      return this.#tokenizeInlines(src, fullMask ? this.#maskSrc(src, undefined, true) : src, tokens, undefined);
     }
 
     const hints = this.#closers;
     const { star, underscore, tilde } = hints;
+    const depth = this.#runDepth++;
+    let runs: InlineRuns | undefined;
+    if (!fullMask) {
+      runs = this.#runTables[depth] ??= { entries: new Int32Array(0), length: 0, gfm: false, source: '', masks: [] };
+      runs.length = 0;
+      runs.masks.length = 0;
+      runs.gfm = !!this.options.gfm && !this.options.pedantic;
+    }
     try {
-      const maskedSrc = this.#maskSrc(src, hints, fullMask);
-      return this.#tokenizeInlines(src, maskedSrc, tokens);
+      const maskedSrc = this.#maskSrc(src, hints, fullMask, runs);
+      if (runs) runs.source = maskedSrc;
+      return this.#tokenizeInlines(src, maskedSrc, tokens, runs);
     } finally {
+      this.#runDepth = depth;
+      if (runs) runs.source = '';
       // A nested inline pass must restore its caller's closer positions.
       hints.star = star;
       hints.underscore = underscore;
@@ -623,7 +644,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @hot */
-  #tokenizeInlines(src: string, maskedSrc: string, tokens: Token[]): Token[] {
+  #tokenizeInlines(src: string, maskedSrc: string, tokens: Token[], runs: InlineRuns | undefined): Token[] {
     let keepPrevChar = false;
     let prevChar = '';
     let offset = 0;
@@ -722,7 +743,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // em & strong
       if ((firstCode === 42 || firstCode === 95
         || (this.#replaced & tokenizerFlags.emStrong))
-        && (token = this.#slots.emStrongAt(src, maskedSrc, prevChar, offset, firstCode === 42 ? this.#closers.star : this.#closers.underscore))) {
+        && (token = this.#slots.emStrongAt(src, maskedSrc, prevChar, offset, firstCode === 42 ? this.#closers.star : this.#closers.underscore, runs))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -749,7 +770,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // del (gfm)
       if ((firstCode === 126
         || (this.#replaced & tokenizerFlags.del))
-        && (token = this.#slots.delAt(src, maskedSrc, prevChar, offset, this.#closers.tilde))) {
+        && (token = this.#slots.delAt(src, maskedSrc, prevChar, offset, this.#closers.tilde, runs))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -814,10 +835,10 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    * as in `<a title=">">`, so mask the whole tag.
    */
   /** @hot */
-  #maskBlocks(src: string, hints: CloserHints | undefined, fullMask: boolean): string {
+  #maskBlocks(src: string, hints: CloserHints | undefined, fullMask: boolean, runs?: InlineRuns): string {
     const { blockSkip, tag, autolink } = this.tokenizer.rules.inline;
     const cursor = this.tokenizer.rules.cursor?.inline;
-    let ranges = this.#blockMasks;
+    let ranges = runs?.masks ?? this.#blockMasks;
     if (ranges) ranges.length = 0;
     let match: RegExpExecArray | null;
     blockSkip.lastIndex = 0;
@@ -840,22 +861,13 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       ranges.push(start, end);
     }
     if (hints && !fullMask) {
-      scanCloserHints(src, hints, ranges);
+      scanInlineRuns(src, hints, ranges, runs);
       // With no closer outside the masked blocks, the tokenizer has no
       // reason to pass the source to a right-delimiter expression.
-      if (hints.star < 0 && hints.underscore < 0 && hints.tilde < 0) return src;
+      if (runs || (hints.star < 0 && hints.underscore < 0 && hints.tilde < 0)) return src;
     }
     if (!ranges?.length) return src;
-    let masked = '';
-    let last = 0;
-    for (let i = 0; i < ranges.length; i += 2) {
-      const start = ranges[i];
-      const end = ranges[i + 1];
-      masked += src.slice(last, start) + '[' + 'a'.repeat(end - start - 2) + ']';
-      last = end;
-    }
-    ranges.length = 0;
-    return masked + src.slice(last);
+    return materializeUserBlockMask(src, ranges);
   }
 
   /**
@@ -863,7 +875,23 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    * delimiters inside them.
    */
   /** @hot */
-  #maskSrc(src: string, hints: CloserHints | undefined, fullMask: boolean): string {
+  #maskSrc(src: string, hints: CloserHints | undefined, fullMask: boolean, runs?: InlineRuns): string {
+    const rules = this.tokenizer.rules.inline;
+    if (runs && hints && rules.anyPunctuationOutsideCode === standardEscapeMask && rules.blockSkip === standardBlockMask
+      && !src.includes('[') && !src.includes('<')) {
+      const ranges = runs.masks;
+      if (src.includes('\\') || src.includes('`')) {
+        let match: RegExpExecArray | null;
+        standardEscapeMask.lastIndex = 0;
+        while ((match = standardEscapeMask.exec(src))) {
+          const start = match.index;
+          const end = start + match[0].length;
+          if (match[2] || (match[1] && hasInlineDelimiter(src, start, end))) ranges.push(start, end);
+        }
+      }
+      scanInlineRuns(src, hints, ranges, runs);
+      return src;
+    }
     // String with links masked to avoid interference with em and strong
     let maskedSrc = src;
 
@@ -902,7 +930,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       maskedSrc = maskedSrc.replace(this.tokenizer.rules.inline.anyPunctuationOutsideCode, maskCodeAndEscapes);
     }
 
-    maskedSrc = this.#maskBlocks(maskedSrc, hints, fullMask);
+    maskedSrc = this.#maskBlocks(maskedSrc, hints, fullMask, runs);
     if (this.#maskHook) maskedSrc = callMaskHook(this.#maskHook, this, maskedSrc);
     if (hints && fullMask) scanCloserHints(maskedSrc, hints, undefined);
 
@@ -937,6 +965,20 @@ function hasInlineDelimiter(source: string, start: number, end: number): boolean
     if (code === 42 || code === 95 || code === 126) return true;
   }
   return false;
+}
+
+/** @hotIgnore User adapter: one effective masked string per inline run. */
+function materializeUserBlockMask(src: string, ranges: number[]): string {
+  let masked = '';
+  let last = 0;
+  for (let i = 0; i < ranges.length; i += 2) {
+    const start = ranges[i];
+    const end = ranges[i + 1];
+    masked += src.slice(last, start) + '[' + 'a'.repeat(end - start - 2) + ']';
+    last = end;
+  }
+  ranges.length = 0;
+  return masked + src.slice(last);
 }
 
 function maskCodeAndEscapes(match: string, ticks: string | undefined, punctuation: string | undefined): string {

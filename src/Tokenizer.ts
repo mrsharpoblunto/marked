@@ -24,11 +24,48 @@ import {
   isStringWhitespace,
   startCloserScan,
   lastCloser,
+  inlineRunAt,
 } from './helpers.ts';
 import { _tag, block, inline, other, paragraphHtmlStart, type Rules } from './rules.ts';
+import type { InlineRuns } from './helpers.ts';
 import type { _Lexer } from './Lexer.ts';
 import type { Links, Tokens, Token } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
+
+function orphanDelimiterEnd(runs: InlineRuns, start: number, delimiter: number): number {
+  const entries = runs.entries;
+  let index = inlineRunAt(runs, start);
+  for (let run = 0; run < 3; run++) {
+    while (index < runs.length && entries[index + 2] === 126) index += 5;
+    if (index >= runs.length || (entries[index + 2] === delimiter) !== (run === 1)) return start;
+    const length = entries[index + 1];
+    if (run === 2) return length >= 2 ? entries[index] : start;
+    if (length !== (run === 1 ? 1 : 2)) return start;
+    index += 5;
+  }
+  return start;
+}
+
+function inlineMaskCode(src: string, offset: number, masks: number[]): number {
+  let first = 0;
+  let end = masks.length >> 1;
+  while (first < end) {
+    const middle = (first + end) >> 1;
+    const range = middle * 2;
+    if (offset < masks[range]) end = middle;
+    else if (offset >= masks[range + 1]) first = middle + 1;
+    else return src.charCodeAt(masks[range]) === 92 ? 43 : offset === masks[range] ? 91 : offset + 1 === masks[range + 1] ? 93 : 97;
+  }
+  return -1;
+}
+
+function delimiterCloserType(before: number, after: number, delimiter: number, pedantic: boolean): number {
+  if (after === 0) return before ? 2 : 0;
+  if (before === 0) return 1;
+  if (after === 1) return before === 2 ? 2 : 3;
+  if (before === 1) return pedantic ? 3 : 1;
+  return delimiter !== 95 || pedantic ? 3 : 0;
+}
 
 /** @hot */
 function punctuationBeforeDelimiter(src: string, offset: number, width: number, rules: Rules): boolean {
@@ -2425,7 +2462,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
   /** @internal */
   /** @hot */
-  emStrongAt(src: string, maskedSrc: string, prevChar: string, offset: number, lastPossibleEmStrongCloserIndex: number): Tokens.Em | Tokens.Strong | undefined {
+  emStrongAt(src: string, maskedSrc: string, prevChar: string, offset: number, lastPossibleEmStrongCloserIndex: number, runs?: InlineRuns): Tokens.Em | Tokens.Strong | undefined {
     let match = execAt(this.rules.inline.emStrongLDelim, src, offset, this.rules.cursor?.inline.emStrongLDelim);
     if (!match) return;
     const following = match[1] || match[2] || match[3] || match[4];
@@ -2443,23 +2480,26 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     // span. Flanking and rules 9-10 are about the whole run, so find its start.
     // Pedantic follows markdown.pl, which has no such rules.
     const srcStart = maskedSrc.length - src.length + offset;
+    const masks = runs?.masks;
     let runStart = srcStart;
     while (!this.options.pedantic && runStart > 0 && maskedSrc.charCodeAt(runStart - 1) === delimiter) {
+      if (masks?.length && inlineMaskCode(maskedSrc, runStart - 1, masks) >= 0) break;
       runStart--;
     }
-    const prevUnit = maskedSrc.charCodeAt(runStart - 1);
+    const maskedPrev = masks?.length ? inlineMaskCode(maskedSrc, runStart - 1, masks) : -1;
+    const prevUnit = maskedPrev >= 0 ? maskedPrev : maskedSrc.charCodeAt(runStart - 1);
     const prevWidth = prevUnit >= 0xdc00 && prevUnit <= 0xdfff && maskedSrc.codePointAt(runStart - 2)! > 0xffff
       ? 2
       : 1;
     const previousStart = runStart - prevWidth;
-    const runPrevPunct = punctuationBeforeDelimiter(maskedSrc, previousStart, prevWidth, this.rules);
+    const runPrevPunct = maskedPrev >= 0 ? maskedPrev !== 97 : punctuationBeforeDelimiter(maskedSrc, previousStart, prevWidth, this.rules);
     const startedBeforeOffset = runStart < srcStart;
     const prevPunct = startedBeforeOffset ? runPrevPunct : punctuationBeforeDelimiter(prevChar, 0, prevChar.length, this.rules);
 
     // An underscore cannot open between letters or numbers.
     if (match[4]) {
       if (startedBeforeOffset) {
-        if (runStart > 0 && alphaNumericAt(maskedSrc, previousStart, prevWidth, this.rules)) return;
+        if (runStart > 0 && (maskedPrev >= 0 ? maskedPrev === 97 : alphaNumericAt(maskedSrc, previousStart, prevWidth, this.rules))) return;
       } else if (prevChar.length === 1
         ? alphaNumericAt(prevChar, 0, 1, this.rules)
         : this.rules.other.unicodeAlphaNumeric.test(prevChar)) {
@@ -2484,41 +2524,59 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       // An emStrongMask hook can return a string with a different length.
       const scanStart = Math.max(0, emStrongCloserWindowStart);
       const lastCloser = lastPossibleEmStrongCloserIndex - emStrongCloserWindowStart + scanStart;
-      const endReg = startCloserScan(closerRule, maskedSrc, scanStart, star ? this.rules.cursor?.inline.star : this.rules.cursor?.inline.underscore);
+      const prepared = star ? this.rules.cursor?.inline.star : this.rules.cursor?.inline.underscore;
+      const defaultCloser = runs !== undefined && prepared?.original === closerRule;
+      const endReg = defaultCloser ? undefined : startCloserScan(closerRule, maskedSrc, scanStart, prepared);
+      const pedantic = !!this.options.pedantic;
+      let cursor = defaultCloser ? inlineRunAt(runs!, orphanDelimiterEnd(runs!, scanStart, delimiter) + 1) : 0;
+      for (;;) {
+        let type: number;
+        let closerStart: number;
+        if (endReg) {
+          match = endReg.exec(maskedSrc);
+          if (!match || match.index > lastCloser) break;
+          rDelim = match[1] || match[2] || match[3] || match[4] || match[5] || match[6];
+          if (!rDelim) continue;
+          rLength = rDelim.length;
+          closerStart = match.index + (match[0].codePointAt(0)! > 0xffff ? 2 : 1);
+          type = match[3] || match[4] ? 1 : match[5] || match[6] ? 3 : 2;
+        } else {
+          if (cursor >= runs!.length) break;
+          const index = cursor;
+          cursor += 5;
+          const entries = runs!.entries;
+          closerStart = entries[index];
+          if (closerStart - 2 > lastCloser) break;
+          if (entries[index + 2] !== delimiter) continue;
+          rLength = entries[index + 1];
+          const unit = maskedSrc.charCodeAt(closerStart - 1);
+          const width = unit >= 0xdc00 && unit <= 0xdfff && maskedSrc.codePointAt(closerStart - 2)! > 0xffff
+            && (!runs!.masks.length || inlineMaskCode(maskedSrc, closerStart - 1, runs!.masks) < 0)
+            ? 2
+            : 1;
+          const before = closerStart - width;
+          if (before > lastCloser) break;
+          if (before < scanStart) continue;
+          type = delimiterCloserType(entries[index + 3], entries[index + 4], delimiter, pedantic);
+          if (!type) continue;
+        }
 
-      while ((match = endReg.exec(maskedSrc)) !== null) {
-        if (match.index > lastCloser) break;
-        rDelim = match[1] || match[2] || match[3] || match[4] || match[5] || match[6];
-
-        if (!rDelim) continue; // skip single * in __abc*abc__
-
-        rLength = rDelim.length;
-
-        if (match[3] || match[4]) { // found another Left Delim
+        if (type === 1) {
           delimTotal += rLength;
           continue;
-        } else if (match[5] || match[6] || openerCanClose) { // either Left or Right Delim
-          if (runLength % 3 && !((runLength + rLength) % 3)) { // CommonMark Emphasis Rules 9-10
-            if (midRun && (match[5] || match[6])) {
-              // A delimiter that can also open and cannot close this run
-              // opens its own span; a later closer pairs with it, not with a
-              // mid-run opener (`**a*a*` must be `**a<em>a</em>`).
-              break;
-            }
-            midDelimTotal += rLength;
-            continue;
-          }
+        }
+        if ((type === 3 || openerCanClose) && runLength % 3 && !((runLength + rLength) % 3)) {
+          if (midRun && type === 3) break;
+          midDelimTotal += rLength;
+          continue;
         }
 
         delimTotal -= rLength;
-
-        if (delimTotal > 0) continue; // Haven't found enough closing delimiters
+        if (delimTotal > 0) continue;
 
         // Remove extra characters. *a*** -> *a*
         rLength = Math.min(rLength, rLength + delimTotal + midDelimTotal);
-        // char length can be >1 for unicode characters;
-        const lastCharLength = match[0].codePointAt(0)! > 0xffff ? 2 : 1;
-        const rawEnd = Math.min(src.length, offset + lLength + match.index - scanStart + lastCharLength + rLength);
+        const rawEnd = Math.min(src.length, offset + lLength + closerStart - scanStart + rLength);
         const raw = sourceText(src, offset, rawEnd);
 
         // Create `em` if smallest delimiter has odd char count. *a***
@@ -2586,7 +2644,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
   /** @internal */
   /** @hot */
-  delAt(src: string, maskedSrc: string, prevChar: string, offset: number, lastPossibleDelCloserIndex: number): Tokens.Del | undefined {
+  delAt(src: string, maskedSrc: string, prevChar: string, offset: number, lastPossibleDelCloserIndex: number, runs?: InlineRuns): Tokens.Del | undefined {
     if (src.charCodeAt(offset) !== 126) return; // ~
     let match = execAt(this.rules.inline.delLDelim, src, offset, this.rules.cursor?.inline.delLDelim);
     if (!match) return;
@@ -2604,32 +2662,55 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       // An emStrongMask hook can return a string with a different length.
       const scanStart = Math.max(0, delCloserWindowStart);
       const lastCloser = lastPossibleDelCloserIndex - delCloserWindowStart + scanStart;
-      const endReg = startCloserScan(closerRule, maskedSrc, scanStart, this.rules.cursor?.inline.tilde);
-
-      while ((match = endReg.exec(maskedSrc)) !== null) {
-        if (match.index > lastCloser) break;
-        rDelim = match[1] || match[2] || match[3] || match[4] || match[5] || match[6];
-
-        if (!rDelim) continue;
-
-        rLength = rDelim.length;
+      const prepared = this.rules.cursor?.inline.tilde;
+      const endReg = runs && prepared?.original === closerRule ? undefined : startCloserScan(closerRule, maskedSrc, scanStart, prepared);
+      let cursor = endReg ? 0 : inlineRunAt(runs!, scanStart + 1);
+      for (;;) {
+        let type: number;
+        let closerStart: number;
+        if (endReg) {
+          match = endReg.exec(maskedSrc);
+          if (!match || match.index > lastCloser) break;
+          rDelim = match[1] || match[2] || match[3] || match[4] || match[5] || match[6];
+          if (!rDelim) continue;
+          rLength = rDelim.length;
+          closerStart = match.index + (match[0].codePointAt(0)! > 0xffff ? 2 : 1);
+          type = match[3] || match[4] ? 1 : 2;
+        } else {
+          if (cursor >= runs!.length) break;
+          const index = cursor;
+          cursor += 5;
+          const entries = runs!.entries;
+          closerStart = entries[index];
+          if (closerStart - 2 > lastCloser) break;
+          if (entries[index + 2] !== 126) continue;
+          rLength = entries[index + 1];
+          if (rLength !== lLength) continue;
+          const unit = maskedSrc.charCodeAt(closerStart - 1);
+          const width = unit >= 0xdc00 && unit <= 0xdfff && maskedSrc.codePointAt(closerStart - 2)! > 0xffff
+            && (!runs!.masks.length || inlineMaskCode(maskedSrc, closerStart - 1, runs!.masks) < 0)
+            ? 2
+            : 1;
+          const before = closerStart - width;
+          if (before > lastCloser) break;
+          if (before < scanStart) continue;
+          type = delimiterCloserType(entries[index + 3], entries[index + 4], 126, false);
+          if (!type) continue;
+        }
 
         if (rLength !== lLength) continue;
-
-        if (match[3] || match[4]) { // found another Left Delim
+        if (type === 1) {
           delimTotal += rLength;
           continue;
         }
 
         delimTotal -= rLength;
-
-        if (delimTotal > 0) continue; // Haven't found enough closing delimiters
+        if (delimTotal > 0) continue;
 
         // Remove extra characters
         rLength = Math.min(rLength, rLength + delimTotal);
         // char length can be >1 for unicode characters
-        const lastCharLength = match[0].codePointAt(0)! > 0xffff ? 2 : 1;
-        const rawEnd = Math.min(src.length, offset + lLength + match.index - scanStart + lastCharLength + rLength);
+        const rawEnd = Math.min(src.length, offset + lLength + closerStart - scanStart + rLength);
         const raw = sourceText(src, offset, rawEnd);
 
         // Create del token - only single ~ or double ~~ supported

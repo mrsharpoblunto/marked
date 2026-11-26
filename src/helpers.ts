@@ -354,6 +354,60 @@ export function findClosingParen(str: string) {
   return -1;
 }
 
+const unicodeDelimiterPunctuation = /[\p{P}\p{S}]/uy;
+
+export function delimiterClass(src: string, offset: number, tildeIsWord: boolean): number {
+  if (offset < 0 || offset >= src.length) return 0;
+  const code = src.charCodeAt(offset);
+  if (code <= 127) {
+    if (code === 32 || (code >= 9 && code <= 13)) return 0;
+    if (tildeIsWord && code === 126) return 2;
+    return (code >= 33 && code <= 47) || (code >= 58 && code <= 64)
+      || (code >= 91 && code <= 96) || (code >= 123 && code <= 126)
+      ? 1
+      : 2;
+  }
+  if (isStringWhitespace(code)) return 0;
+  unicodeDelimiterPunctuation.lastIndex = offset;
+  return unicodeDelimiterPunctuation.test(src) ? 1 : 2;
+}
+
+export interface InlineRuns {
+  entries: Int32Array;
+  length: number;
+  gfm: boolean;
+  source: string;
+  masks: number[];
+}
+
+export function inlineRunAt(runs: InlineRuns, offset: number): number {
+  let first = 0;
+  let end = runs.length / 5;
+  while (first < end) {
+    const middle = (first + end) >> 1;
+    if (runs.entries[middle * 5] < offset) first = middle + 1;
+    else end = middle;
+  }
+  return first * 5;
+}
+
+function addInlineRun(runs: InlineRuns, src: string, start: number, end: number, code: number, before: number, after: number) {
+  const index = runs.length;
+  if (index + 5 > runs.entries.length) {
+    const expanded = new Int32Array(Math.max(40, runs.entries.length * 2));
+    expanded.set(runs.entries);
+    runs.entries = expanded;
+  }
+  const tildeIsWord = code === 42 && runs.gfm;
+  const entries = runs.entries;
+  entries[index] = start;
+  entries[index + 1] = end - start;
+  entries[index + 2] = code;
+  entries[index + 3] = before < 0 ? 1 : delimiterClass(src, before, tildeIsWord);
+  entries[index + 4] = after < 0 ? 1 : delimiterClass(src, after, tildeIsWord);
+  runs.length += 5;
+}
+
 export interface CloserHints {
   star: number;
   underscore: number;
@@ -373,6 +427,10 @@ export interface CloserHints {
  */
 /** @hot */
 export function scanCloserHints(src: string, hints: CloserHints, masks: number[] | undefined): void {
+  scanInlineRuns(src, hints, masks, undefined);
+}
+
+export function scanInlineRuns(src: string, hints: CloserHints, masks: number[] | undefined, runs: InlineRuns | undefined): void {
   let star = -1;
   let underscore = -1;
   let tilde = -1;
@@ -390,6 +448,11 @@ export function scanCloserHints(src: string, hints: CloserHints, masks: number[]
       const start = i++;
       while (i < end && src.charCodeAt(i) === code) i++;
 
+      if (runs) {
+        const unit = src.charCodeAt(start - 1);
+        const width = unit >= 0xdc00 && unit <= 0xdfff && src.codePointAt(start - 2)! > 0xffff ? 2 : 1;
+        addInlineRun(runs, src, start, i, code, start === maskEnd ? -1 : start - width, i !== src.length && i === end ? -1 : i);
+      }
       if (start === 0) continue;
       const prev = start === maskEnd ? 93 : src.charCodeAt(start - 1);
       if (prev === 32 || prev === 9 || prev === 10 || prev === 13 || prev === 12) continue;
