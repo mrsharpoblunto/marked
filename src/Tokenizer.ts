@@ -1,5 +1,5 @@
 import { blockContentStart, blockIndent, blockIndentEnd, blockLineEnd, thematicBreakEnd } from './BlockLine.ts';
-import { TokenKind } from './tokenKind.ts';
+import { tokenKind, TokenKind } from './tokenKind.ts';
 import {
   createBlockquote, createBr, createCheckbox, createCode, createCodespan,
   createDef, createDel, createEm, createEscape, createHeading, createHr,
@@ -910,15 +910,29 @@ function stripQuoteMarkers(src: string, start: number, end: number): string {
   return result + sourceText(src, span, end);
 }
 
-function quoteText(src: string, first: number, end: number): string {
-  let span = first;
+/** @hotIgnore Output: one string for each container token. */
+function containerText(src: string, segments: number[]): string {
   let text = '';
+  for (let i = 0; i < segments.length; i += 3) {
+    const spaces = segments[i + 2];
+    if (spaces) text += ' '.repeat(spaces);
+    text += sourceText(src, segments[i], segments[i + 1]);
+  }
+  return text;
+}
+
+/** @hot */
+function quoteSegments(src: string, first: number, end: number, segments: number[]): void {
+  segments.length = 0;
+  let span = first;
+  let padding = 0;
   let start = first;
   let followsNewline = false;
   while (start < end) {
     const marker = quoteMarkerAt(src, start);
     if (marker >= 0) {
-      text += sourceText(src, span, start);
+      segments.push(span, start, padding);
+      padding = 0;
       span = marker + 1;
       const next = src.charCodeAt(span);
       if (next === 32) {
@@ -928,7 +942,12 @@ function quoteText(src: string, first: number, end: number): string {
         while (whitespaceEnd < end && (src.charCodeAt(whitespaceEnd) === 32 || src.charCodeAt(whitespaceEnd) === 9)) {
           whitespaceEnd++;
         }
-        text += expandTabs(sourceText(src, span, whitespaceEnd), span - start).slice(1);
+        const column = span - start;
+        let width = column;
+        for (let i = span; i < whitespaceEnd; i++) {
+          width += src.charCodeAt(i) === 9 ? 4 - (width & 3) : 1;
+        }
+        padding = width - column - 1;
         span = whitespaceEnd;
       }
     } else if (followsNewline) {
@@ -940,8 +959,8 @@ function quoteText(src: string, first: number, end: number): string {
         while (after < end && src.charCodeAt(after) === code) after++;
         while (after < end && (src.charCodeAt(after) === 32 || src.charCodeAt(after) === 9)) after++;
         if (after === end || src.charCodeAt(after) === 10) {
-          text += sourceText(src, span, start);
-          text += '    ';
+          segments.push(span, start, padding);
+          padding = 4;
           span = pos;
         }
       }
@@ -953,13 +972,15 @@ function quoteText(src: string, first: number, end: number): string {
     followsNewline = code === 10;
     start++;
   }
-  return text + sourceText(src, span, end);
+  segments.push(span, end, padding);
 }
 
 /**
  * Tokenizer
  */
 export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
+  /** @internal */
+  private quoteBuffer: number[] | undefined;
   options: MarkedOptions<ParserOutput, RendererOutput>;
   rules!: Rules; // set by the lexer
   lexer!: _Lexer<ParserOutput, RendererOutput>; // set by the lexer
@@ -1183,13 +1204,16 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           start = line + 1;
         }
 
-        let currentText: string;
         const tab = src.indexOf('\t', position);
+        const segments = this.quoteBuffer ??= [];
+        let currentText: string;
         if (tab >= 0 && tab < end && this.lexer.state.top && !this.lexer.state.inBlockquote) {
           const expanded = expandBlockquoteTabs(src, position, end);
-          currentText = quoteText(expanded, 0, expanded.length);
+          quoteSegments(expanded, 0, expanded.length, segments);
+          currentText = containerText(expanded, segments);
         } else {
-          currentText = quoteText(src, position, end);
+          quoteSegments(src, position, end, segments);
+          currentText = containerText(src, segments);
         }
         position = end + 1;
         rawEnd = end;
@@ -1211,11 +1235,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         }
 
         const lastToken = tokens.at(-1);
+        const kind = lastToken && (this.options.tokenizer || this.options.extensions ? tokenKind(lastToken) : lastToken.kind ?? tokenKind(lastToken));
 
-        if (lastToken?.type === 'code' || lastToken?.type === 'heading' || lastToken?.type === 'hr' || lastToken?.type === 'html' || lastToken?.type === 'table') {
+        if (kind === TokenKind.Code || kind === TokenKind.Heading || kind === TokenKind.Hr || kind === TokenKind.Html || kind === TokenKind.Table) {
           // blockquote continuation cannot be preceded by a code block, heading, hr, html block or table
           break;
-        } else if (lastToken?.type === 'blockquote') {
+        } else if (kind === TokenKind.Blockquote) {
           // include continuation in nested blockquote
           const oldToken = lastToken as Tokens.Blockquote;
           // The continuation lines belong to the same nesting frame as the
@@ -1261,7 +1286,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
             continue;
           }
           break;
-        } else if (lastToken?.type === 'list') {
+        } else if (kind === TokenKind.List) {
           // include continuation in nested list
           const oldToken = lastToken as Tokens.List;
           const newText = oldToken.raw + '\n' + src.slice(position, quoteEnd);
