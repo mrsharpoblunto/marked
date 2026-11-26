@@ -48,7 +48,12 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
    */
   parseInline = this.parseMarkdown(false);
 
-  Parser = _Parser<ParserOutput, RendererOutput>;
+  Parser: {
+    new(options?: MarkedOptions<ParserOutput, RendererOutput>): _Parser<ParserOutput, RendererOutput>;
+    parse: typeof _Parser.parse;
+    parseInline: typeof _Parser.parseInline;
+  } = _Parser;
+
   Renderer = _Renderer<ParserOutput, RendererOutput>;
   TextRenderer = _TextRenderer<RendererOutput>;
   Lexer = _Lexer;
