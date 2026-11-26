@@ -424,17 +424,17 @@ export function expandTabs(line: string, indent = 0): string {
  * so a tab there stays literal. Lines from the first list item on are returned as is, because
  * the item's columns and the fences inside it are not tracked here.
  */
-export function expandBlockquoteTabs(src: string): string {
+export function expandBlockquoteTabs(src: string, first: number, limit: number): string {
   let fenceMarker = 0;
   let fenceLength = 0;
   let fenceDepth = Infinity;
   let expanded = '';
-  let start = 0;
+  let start = first;
   const part = { depth: 0, expanded: '', keptIndent: '', content: '' };
-  while (start <= src.length) {
+  while (start <= limit) {
     let end = src.indexOf('\n', start);
-    if (end === -1) end = src.length;
-    if (start !== 0) expanded += '\n';
+    if (end === -1 || end > limit) end = limit;
+    if (start !== first) expanded += '\n';
     splitBlockquoteLine(src, start, end, fenceDepth, part);
     if (fenceDepth !== part.depth) fenceMarker = 0;
     if (fenceMarker) {
@@ -447,7 +447,7 @@ export function expandBlockquoteTabs(src: string): string {
       fenceMarker = 0;
       fenceDepth = Infinity;
     } else {
-      if (other.blockquoteListItemStart.test(part.content)) return expanded + src.slice(start);
+      if (other.blockquoteListItemStart.test(part.content)) return expanded + src.slice(start, limit);
       const open = other.blockquoteFenceOpen.exec(part.content)?.[1];
       if (open) {
         fenceMarker = open.charCodeAt(0);

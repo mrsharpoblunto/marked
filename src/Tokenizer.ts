@@ -379,6 +379,59 @@ function rawTagNameMatches(raw: string, start: number): boolean {
   return length !== 0 && (next === 62 || isStringWhitespace(next));
 }
 
+/** @hot */
+function quoteMarkerAt(src: string, start: number): number {
+  let marker = start;
+  while (marker < start + 3 && src.charCodeAt(marker) === 32) marker++;
+  return src.charCodeAt(marker) === 62 ? marker : -1;
+}
+
+function quoteText(src: string, first: number, end: number): string {
+  let span = first;
+  let text = '';
+  let start = first;
+  let followsNewline = false;
+  while (start < end) {
+    const marker = quoteMarkerAt(src, start);
+    if (marker >= 0) {
+      text += sourceText(src, span, start);
+      span = marker + 1;
+      const next = src.charCodeAt(span);
+      if (next === 32) {
+        span++;
+      } else if (next === 9) {
+        let whitespaceEnd = span + 1;
+        while (whitespaceEnd < end && (src.charCodeAt(whitespaceEnd) === 32 || src.charCodeAt(whitespaceEnd) === 9)) {
+          whitespaceEnd++;
+        }
+        text += expandTabs(sourceText(src, span, whitespaceEnd), span - start).slice(1);
+        span = whitespaceEnd;
+      }
+    } else if (followsNewline) {
+      let pos = start;
+      while (pos < start + 3 && src.charCodeAt(pos) === 32) pos++;
+      const code = src.charCodeAt(pos);
+      if (code === 45 || code === 61) {
+        let after = pos + 1;
+        while (after < end && src.charCodeAt(after) === code) after++;
+        while (after < end && (src.charCodeAt(after) === 32 || src.charCodeAt(after) === 9)) after++;
+        if (after === end || src.charCodeAt(after) === 10) {
+          text += sourceText(src, span, start);
+          text += '    ';
+          span = pos;
+        }
+      }
+    }
+    let code = src.charCodeAt(start);
+    while (start < end && code !== 10 && code !== 13 && code !== 0x2028 && code !== 0x2029) {
+      code = src.charCodeAt(++start);
+    }
+    followsNewline = code === 10;
+    start++;
+  }
+  return text + sourceText(src, span, end);
+}
+
 /**
  * Tokenizer
  */
@@ -528,7 +581,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
         while (start <= quoteEnd) {
           const line = Math.min(lineEnd(src, start), quoteEnd);
-          if (execAt(this.rules.other.blockquoteStart, src, start, this.rules.cursor?.other.blockquoteStart)) {
+          if (quoteMarkerAt(src, start) >= 0) {
             inBlockquote = true;
           } else if (inBlockquote) {
             break;
@@ -537,29 +590,16 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           start = line + 1;
         }
 
-        const currentRaw = src.slice(position, end);
+        let currentText: string;
+        const tab = src.indexOf('\t', position);
+        if (tab >= 0 && tab < end && this.lexer.state.top && !this.lexer.state.inBlockquote) {
+          const expanded = expandBlockquoteTabs(src, position, end);
+          currentText = quoteText(expanded, 0, expanded.length);
+        } else {
+          currentText = quoteText(src, position, end);
+        }
         position = end + 1;
         rawEnd = end;
-        // Only the outermost block quote knows the original tab columns.
-        let currentText = currentRaw;
-        if (currentRaw.includes('\t')) {
-          if (this.lexer.state.top && !this.lexer.state.inBlockquote) {
-            currentText = expandBlockquoteTabs(currentRaw);
-          }
-          currentText = currentText.replace(
-            this.rules.other.blockquoteMarkerWhitespace,
-            (_: string, marker: string, whitespace: string) => {
-              if (whitespace.startsWith(' ')) {
-                return marker + ' ' + whitespace.slice(1);
-              }
-              return marker + expandTabs(whitespace, marker.length);
-            },
-          );
-        }
-        currentText = currentText
-          // precede setext continuation with 4 spaces so it isn't a setext
-          .replace(this.rules.other.blockquoteSetextReplace, '\n    $1')
-          .replace(this.rules.other.blockquoteSetextReplace2, '');
         text = text ? `${text}\n${currentText}` : currentText;
 
         // parse blockquote lines as top level tokens
@@ -622,7 +662,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           text = text.slice(0, text.length - oldToken.text.length) + newToken.text;
 
           // A leftover quote line belongs to this blockquote.
-          if (position < quoteEnd && execAt(this.rules.other.blockquoteStart, src, position, this.rules.cursor?.other.blockquoteStart)) {
+          if (position < quoteEnd && quoteMarkerAt(src, position) >= 0) {
             continue;
           }
           break;
@@ -648,7 +688,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
             position = consumedEnd;
           }
 
-          if (position < quoteEnd && !execAt(this.rules.other.blockquoteStart, src, position, this.rules.cursor?.other.blockquoteStart)) {
+          if (position < quoteEnd && quoteMarkerAt(src, position) < 0) {
             break;
           }
           continue;
