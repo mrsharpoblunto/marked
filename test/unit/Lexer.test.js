@@ -2,6 +2,15 @@ import { Lexer } from '../../lib/marked.esm.js';
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 
+const tokenKinds = ['space', 'hr', 'heading', 'code', 'table', 'blockquote', 'list', 'checkbox', 'html', 'def', 'paragraph', 'text', 'escape', 'link', 'image', 'strong', 'em', 'codespan', 'br', 'del', 'list_item'];
+
+function addExpectedKinds(value) {
+  if (!value || typeof value !== 'object') return;
+  const kind = tokenKinds.indexOf(value.type) + 1;
+  if (kind && typeof value.raw === 'string') value.kind = kind;
+  for (const child of Object.values(value)) addExpectedKinds(child);
+}
+
 function expectTokens({ md, options, tokens = [], links = {}, log = false }) {
   const lexer = new Lexer(options);
   const actual = lexer.lex(md);
@@ -14,6 +23,7 @@ function expectTokens({ md, options, tokens = [], links = {}, log = false }) {
       2,
     ));
   }
+  addExpectedKinds(expected);
   assert.deepEqual(actual, expected);
 }
 
@@ -22,6 +32,7 @@ function expectInlineTokens({ md, options, tokens, links = {} }) {
   lexer.tokens.links = links;
   const outTokens = [];
   lexer.inlineTokens(md, outTokens);
+  addExpectedKinds(tokens);
   assert.deepEqual(outTokens, tokens);
 }
 

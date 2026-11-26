@@ -1,3 +1,4 @@
+import { TokenKind } from './tokenKind.ts';
 import { createBlockquote, createBr, createCheckbox, createCode, createCodespan, createDef, createDel, createEm, createEscape, createHeading, createHr, createHtml, createImage, createLink, createList, createListItem, createParagraph, createSpace, createStrong, createTable, createTableCell, createText } from './tokenFactories.ts';
 import { _defaults } from './defaults.ts';
 import {
@@ -893,6 +894,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           for (const token of item.tokens) {
             if (token.type === 'text') {
               token.type = 'paragraph';
+              if (token.kind !== undefined) token.kind = TokenKind.Paragraph;
             }
           }
         }

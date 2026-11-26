@@ -29,26 +29,30 @@ export type Token = (
   MarkedToken
   | Tokens.Generic);
 
+interface KindedToken {
+  kind?: number;
+}
+
 export namespace Tokens {
-  export interface Blockquote {
+  export interface Blockquote extends KindedToken {
     type: 'blockquote';
     raw: string;
     text: string;
     tokens: Token[];
   }
 
-  export interface Br {
+  export interface Br extends KindedToken {
     type: 'br';
     raw: string;
   }
 
-  export interface Checkbox {
+  export interface Checkbox extends KindedToken {
     type: 'checkbox';
     raw: string;
     checked: boolean;
   }
 
-  export interface Code {
+  export interface Code extends KindedToken {
     type: 'code';
     raw: string;
     codeBlockStyle?: 'indented';
@@ -57,13 +61,13 @@ export namespace Tokens {
     escaped?: boolean;
   }
 
-  export interface Codespan {
+  export interface Codespan extends KindedToken {
     type: 'codespan';
     raw: string;
     text: string;
   }
 
-  export interface Def {
+  export interface Def extends KindedToken {
     type: 'def';
     raw: string;
     tag: string;
@@ -71,21 +75,21 @@ export namespace Tokens {
     title: string;
   }
 
-  export interface Del {
+  export interface Del extends KindedToken {
     type: 'del';
     raw: string;
     text: string;
     tokens: Token[];
   }
 
-  export interface Em {
+  export interface Em extends KindedToken {
     type: 'em';
     raw: string;
     text: string;
     tokens: Token[];
   }
 
-  export interface Escape {
+  export interface Escape extends KindedToken {
     type: 'escape';
     raw: string;
     text: string;
@@ -99,7 +103,7 @@ export namespace Tokens {
     tokens?: Token[];
   }
 
-  export interface Heading {
+  export interface Heading extends KindedToken {
     type: 'heading';
     raw: string;
     depth: number;
@@ -107,12 +111,12 @@ export namespace Tokens {
     tokens: Token[];
   }
 
-  export interface Hr {
+  export interface Hr extends KindedToken {
     type: 'hr';
     raw: string;
   }
 
-  export interface HTML {
+  export interface HTML extends KindedToken {
     type: 'html';
     raw: string;
     pre: boolean;
@@ -120,7 +124,7 @@ export namespace Tokens {
     block: boolean;
   }
 
-  export interface Image {
+  export interface Image extends KindedToken {
     type: 'image';
     raw: string;
     href: string;
@@ -129,7 +133,7 @@ export namespace Tokens {
     tokens: Token[];
   }
 
-  export interface Link {
+  export interface Link extends KindedToken {
     type: 'link';
     raw: string;
     href: string;
@@ -143,7 +147,7 @@ export namespace Tokens {
     autolink?: boolean;
   }
 
-  export interface List {
+  export interface List extends KindedToken {
     type: 'list';
     raw: string;
     ordered: boolean;
@@ -152,7 +156,7 @@ export namespace Tokens {
     items: ListItem[];
   }
 
-  export interface ListItem {
+  export interface ListItem extends KindedToken {
     type: 'list_item';
     raw: string;
     task: boolean;
@@ -162,7 +166,7 @@ export namespace Tokens {
     tokens: Token[];
   }
 
-  export interface Paragraph {
+  export interface Paragraph extends KindedToken {
     type: 'paragraph';
     raw: string;
     pre?: boolean;
@@ -170,19 +174,19 @@ export namespace Tokens {
     tokens: Token[];
   }
 
-  export interface Space {
+  export interface Space extends KindedToken {
     type: 'space';
     raw: string;
   }
 
-  export interface Strong {
+  export interface Strong extends KindedToken {
     type: 'strong';
     raw: string;
     text: string;
     tokens: Token[];
   }
 
-  export interface Table {
+  export interface Table extends KindedToken {
     type: 'table';
     raw: string;
     align: Array<'center' | 'left' | 'right' | null>;
@@ -201,7 +205,7 @@ export namespace Tokens {
     text: P;
   }
 
-  export interface Tag {
+  export interface Tag extends KindedToken {
     type: 'html';
     raw: string;
     inLink: boolean;
@@ -210,7 +214,7 @@ export namespace Tokens {
     block: boolean;
   }
 
-  export interface Text {
+  export interface Text extends KindedToken {
     type: 'text';
     raw: string;
     text: string;

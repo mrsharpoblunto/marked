@@ -1,9 +1,10 @@
+import { tokenKind, TokenKind } from './tokenKind.ts';
 import { _Renderer, imageTextTokens, rendererSlots } from './Renderer.ts';
 import { _TextRenderer, TextMode, textRendererSlots } from './TextRenderer.ts';
 import { _defaults } from './defaults.ts';
 import { emit } from './OutputBuffer.ts';
 import type { OutputBuffer } from './OutputBuffer.ts';
-import type { MarkedToken, Token } from './Tokens.ts';
+import type { Token, Tokens } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
 
 /**
@@ -14,6 +15,7 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
   renderer: _Renderer<ParserOutput, RendererOutput>;
   textRenderer: _TextRenderer<RendererOutput>;
   #slots: _Renderer<ParserOutput, RendererOutput>;
+  #useKinds = false;
   #textSlots: _TextRenderer<RendererOutput> | undefined;
 
   constructor(options?: MarkedOptions<ParserOutput, RendererOutput>) {
@@ -26,6 +28,13 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
     this.renderer.parser = this;
     this.textRenderer = new _TextRenderer<RendererOutput>();
     this.textRenderer.parser = this;
+  }
+
+  /** @internal */
+  static parseKnown<P, R>(tokens: Token[], options: MarkedOptions<P, R>, block: boolean): P {
+    const parser = new _Parser(options);
+    parser.#useKinds = true;
+    return block ? parser.parse(tokens) : parser.parseInline(tokens);
   }
 
   /**
@@ -71,55 +80,55 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
       const extended = extensions ? renderExtension(extensions, this, anyToken, output) : 0;
       if (extended === 2) continue;
 
-      const token = anyToken as MarkedToken;
+      const token = anyToken;
 
-      switch (token.type) {
-        case 'space': {
-          renderer.spaceAt(token, output);
+      switch ((this.#useKinds ? token.kind : undefined) ?? tokenKind(token)) {
+        case TokenKind.Space: {
+          renderer.spaceAt(token as Tokens.Space, output);
           break;
         }
-        case 'hr': {
-          renderer.hrAt(token, output);
+        case TokenKind.Hr: {
+          renderer.hrAt(token as Tokens.Hr, output);
           break;
         }
-        case 'heading': {
-          renderer.headingAt(token, output);
+        case TokenKind.Heading: {
+          renderer.headingAt(token as Tokens.Heading, output);
           break;
         }
-        case 'code': {
-          renderer.codeAt(token, output);
+        case TokenKind.Code: {
+          renderer.codeAt(token as Tokens.Code, output);
           break;
         }
-        case 'table': {
-          renderer.tableAt(token, output);
+        case TokenKind.Table: {
+          renderer.tableAt(token as Tokens.Table, output);
           break;
         }
-        case 'blockquote': {
-          renderer.blockquoteAt(token, output);
+        case TokenKind.Blockquote: {
+          renderer.blockquoteAt(token as Tokens.Blockquote, output);
           break;
         }
-        case 'list': {
-          renderer.listAt(token, output);
+        case TokenKind.List: {
+          renderer.listAt(token as Tokens.List, output);
           break;
         }
-        case 'checkbox': {
-          renderer.checkboxAt(token, output);
+        case TokenKind.Checkbox: {
+          renderer.checkboxAt(token as Tokens.Checkbox, output);
           break;
         }
-        case 'html': {
-          renderer.htmlAt(token, output);
+        case TokenKind.Html: {
+          renderer.htmlAt(token as Tokens.HTML | Tokens.Tag, output);
           break;
         }
-        case 'def': {
-          renderer.defAt(token, output);
+        case TokenKind.Def: {
+          renderer.defAt(token as Tokens.Def, output);
           break;
         }
-        case 'paragraph': {
-          renderer.paragraphAt(token, output);
+        case TokenKind.Paragraph: {
+          renderer.paragraphAt(token as Tokens.Paragraph, output);
           break;
         }
-        case 'text': {
-          renderer.textAt(token, output);
+        case TokenKind.Text: {
+          renderer.textAt(token as Tokens.Text, output);
           break;
         }
 
@@ -186,51 +195,51 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
       const extended = extensions ? renderExtension(extensions, this, anyToken, output) : 0;
       if (extended === 2) continue;
 
-      const token = anyToken as MarkedToken;
+      const token = anyToken;
 
-      switch (token.type) {
-        case 'escape': {
-          renderer.escapeAt(token, output);
+      switch ((this.#useKinds ? token.kind : undefined) ?? tokenKind(token)) {
+        case TokenKind.Escape: {
+          renderer.escapeAt(token as Tokens.Escape, output);
           break;
         }
-        case 'html': {
-          renderer.htmlAt(token, output);
+        case TokenKind.Html: {
+          renderer.htmlAt(token as Tokens.HTML | Tokens.Tag, output);
           break;
         }
-        case 'link': {
-          renderer.linkAt(token, output);
+        case TokenKind.Link: {
+          renderer.linkAt(token as Tokens.Link, output);
           break;
         }
-        case 'image': {
-          renderer.imageAt(token, output);
+        case TokenKind.Image: {
+          renderer.imageAt(token as Tokens.Image, output);
           break;
         }
-        case 'checkbox': {
-          renderer.checkboxAt(token, output);
+        case TokenKind.Checkbox: {
+          renderer.checkboxAt(token as Tokens.Checkbox, output);
           break;
         }
-        case 'strong': {
-          renderer.strongAt(token, output);
+        case TokenKind.Strong: {
+          renderer.strongAt(token as Tokens.Strong, output);
           break;
         }
-        case 'em': {
-          renderer.emAt(token, output);
+        case TokenKind.Em: {
+          renderer.emAt(token as Tokens.Em, output);
           break;
         }
-        case 'codespan': {
-          renderer.codespanAt(token, output);
+        case TokenKind.Codespan: {
+          renderer.codespanAt(token as Tokens.Codespan, output);
           break;
         }
-        case 'br': {
-          renderer.brAt(token, output);
+        case TokenKind.Br: {
+          renderer.brAt(token as Tokens.Br, output);
           break;
         }
-        case 'del': {
-          renderer.delAt(token, output);
+        case TokenKind.Del: {
+          renderer.delAt(token as Tokens.Del, output);
           break;
         }
-        case 'text': {
-          renderer.textAt(token, output);
+        case TokenKind.Text: {
+          renderer.textAt(token as Tokens.Text, output);
           break;
         }
         default: {
