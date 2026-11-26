@@ -1,4 +1,4 @@
-import { noopTest, other } from './rules.ts';
+import { block, inline, noopTest, other } from './rules.ts';
 
 /** @hotIgnore Output: at most one string for each token field. */
 export function sourceText(src: string, start: number, end: number): string {
@@ -24,24 +24,80 @@ export function trimEndOffset(src: string, start: number, end: number): number {
   return end;
 }
 
-const cursorRules = new WeakMap<RegExp, RegExp>();
+interface CursorRule {
+  original: RegExp;
+  sticky: RegExp | null;
+}
+
+// Rule sets share expressions. Compile each expression once at module setup.
+const preparedRules = new WeakMap<RegExp, CursorRule>();
+
+function prepareRule(original: RegExp): CursorRule {
+  let rule = preparedRules.get(original);
+  if (!rule) {
+    let sticky = null;
+    if (original !== noopTest) {
+      // Remove start anchors while preserving escaped characters and classes.
+      const pattern = original.source.replace(/\\.|\[(?:\\.|[^\]\\])*\]|\^/g, part => part === '^' ? '' : part);
+      sticky = new RegExp(pattern, original.flags.replace(/[gy]/g, '') + 'y');
+    }
+    rule = { original, sticky };
+    preparedRules.set(original, rule);
+  }
+  return rule;
+}
+
+function prepareRules<K extends string>(keys: readonly K[], rules: Record<K, RegExp>): Record<K, CursorRule> {
+  return Object.fromEntries(keys.map(key => [key, prepareRule(rules[key])])) as Record<K, CursorRule>;
+}
+
+const blockKeys = ['code', 'fences', 'heading', 'blockquote', 'list', 'hr', 'html', 'def', 'table', 'lheading', 'paragraph', 'text'] as const;
+const inlineKeys = ['code', 'tag', 'autolink', 'escape', 'link', 'reflink', 'nolink', 'emStrongLDelim', 'br', 'delLDelim', 'url', 'text'] as const;
+const preparedBlock = {
+  normal: prepareRules(blockKeys, block.normal),
+  gfm: prepareRules(blockKeys, block.gfm),
+  pedantic: prepareRules(blockKeys, block.pedantic),
+};
+
+const preparedInline = {
+  normal: prepareRules(inlineKeys, inline.normal),
+  gfm: prepareRules(inlineKeys, inline.gfm),
+  breaks: prepareRules(inlineKeys, inline.breaks),
+  pedantic: prepareRules(inlineKeys, inline.pedantic),
+};
+
+const preparedOther = {
+  blockquoteStart: prepareRule(other.blockquoteStart),
+  listInterruptsParagraph: prepareRule(other.listInterruptsParagraph),
+  htmlBegin: prepareRule(other.htmlBeginRegex(4)),
+  tableHeader: prepareRule(other.tableHeader),
+  textIndentedContinuation: prepareRule(other.textIndentedContinuation),
+};
+
+export interface PreparedRules {
+  block: typeof preparedBlock.normal;
+  inline: typeof preparedInline.normal;
+  other: typeof preparedOther;
+}
+
+export const preparedLexerRules = {
+  normal: { block: preparedBlock.normal, inline: preparedInline.normal, other: preparedOther },
+  gfm: { block: preparedBlock.gfm, inline: preparedInline.gfm, other: preparedOther },
+  breaks: { block: preparedBlock.gfm, inline: preparedInline.breaks, other: preparedOther },
+  pedantic: { block: preparedBlock.pedantic, inline: preparedInline.pedantic, other: preparedOther },
+};
 
 /** @hotIgnore User adapter: one source suffix per custom rule call. */
 function execUserRule(rule: RegExp, src: string, offset: number): RegExpExecArray | null {
   return rule.exec(src.slice(offset));
 }
 
-export function execAt(rule: RegExp, src: string, offset: number): RegExpExecArray | null {
+/** @hot */
+export function execAt(rule: RegExp, src: string, offset: number, prepared: CursorRule | undefined): RegExpExecArray | null {
   if (offset === 0) return rule.exec(src);
-  let sticky = cursorRules.get(rule);
-  if (!sticky) {
-    if (rule === noopTest) return null;
-    if (typeof rule.source !== 'string' || rule.exec !== RegExp.prototype.exec) return execUserRule(rule, src, offset);
-    // Remove start anchors while preserving escaped characters and classes.
-    const pattern = rule.source.replace(/\\.|\[(?:\\.|[^\]\\])*\]|\^/g, part => part === '^' ? '' : part);
-    sticky = new RegExp(pattern, rule.flags.replace(/[gy]/g, '') + 'y');
-    cursorRules.set(rule, sticky);
-  }
+  if (prepared?.original !== rule) return execUserRule(rule, src, offset);
+  const sticky = prepared.sticky;
+  if (!sticky) return null;
   sticky.lastIndex = offset;
   return sticky.exec(src);
 }

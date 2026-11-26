@@ -2,9 +2,9 @@ import { tokenKind, TokenKind } from './tokenKind.ts';
 import { createText } from './tokenFactories.ts';
 import { _Tokenizer } from './Tokenizer.ts';
 import { _defaults } from './defaults.ts';
-import { other, block, inline } from './rules.ts';
+import { other, block, inline, type Rules } from './rules.ts';
 import { callMaskHook, hookSlots } from './HookDispatch.ts';
-import { execAt, normalizeLabel, scanCloserHints, sourceText } from './helpers.ts';
+import { execAt, normalizeLabel, preparedLexerRules, scanCloserHints, sourceText } from './helpers.ts';
 import type { Token, TokensList, Tokens } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
 
@@ -170,20 +170,24 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       inBlockquote: false,
     };
 
-    const rules = {
+    const rules: Rules = {
       other,
       block: block.normal,
       inline: inline.normal,
+      cursor: preparedLexerRules.normal,
     };
 
     if (this.options.pedantic) {
+      rules.cursor = preparedLexerRules.pedantic;
       rules.block = block.pedantic;
       rules.inline = inline.pedantic;
     } else if (this.options.gfm) {
       rules.block = block.gfm;
       if (this.options.breaks) {
+        rules.cursor = preparedLexerRules.breaks;
         rules.inline = inline.breaks;
       } else {
+        rules.cursor = preparedLexerRules.gfm;
         rules.inline = inline.gfm;
       }
     }
@@ -750,6 +754,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   /** @hot */
   #maskBlocks(src: string): string {
     const { blockSkip, tag, autolink } = this.tokenizer.rules.inline;
+    const cursor = this.tokenizer.rules.cursor?.inline;
     let masked = '';
     let last = 0;
     let match: RegExpExecArray | null;
@@ -758,7 +763,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       const start = match.index + (match[2] ? match[2].length : 0);
       let end = match.index + match[0].length;
       if (src.charCodeAt(start) === 60) {
-        const html = execAt(tag, src, start) || execAt(autolink, src, start);
+        const html = execAt(tag, src, start, cursor?.tag) || execAt(autolink, src, start, cursor?.autolink);
         if (!html) {
           blockSkip.lastIndex = start + 1;
           continue;

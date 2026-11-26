@@ -1,16 +1,19 @@
+import type { PreparedRules } from './helpers.ts';
+
 export const noopTest = { exec: () => null } as unknown as RegExp;
+
+const prepareIndentRules: Array<() => void> = [];
 
 function cachedIndentRegex(createRegex: (indent: number) => RegExp) {
   const cache: RegExp[] = [];
-  return (indent: number) => {
-    const cacheIndex = Math.max(0, Math.min(3, indent - 1));
-    let regex = cache[cacheIndex];
-    if (!regex) {
-      regex = createRegex(cacheIndex);
-      cache[cacheIndex] = regex;
-    }
-    return regex;
-  };
+  prepareIndentRules.push(() => {
+    for (let i = 0; i < 4; i++) cache.push(createRegex(i));
+  });
+  /** @hot */
+  function ruleAtIndent(indent: number): RegExp {
+    return cache[Math.max(0, Math.min(3, indent - 1))];
+  }
+  return ruleAtIndent;
 }
 
 function edit(regex: string | RegExp, opt = '') {
@@ -673,8 +676,14 @@ export const inline = {
   pedantic: inlinePedantic,
 };
 
+// The HTML rule needs the tag names defined above.
+for (const prepare of prepareIndentRules) prepare();
+prepareIndentRules.length = 0;
+
 export interface Rules {
   other: typeof other
   block: Record<BlockKeys, RegExp>
   inline: Record<InlineKeys, RegExp>
+  /** @internal */
+  cursor?: PreparedRules
 }
