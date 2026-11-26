@@ -379,6 +379,25 @@ function rawTagNameMatches(raw: string, start: number): boolean {
   return length !== 0 && (next === 62 || isStringWhitespace(next));
 }
 
+function listLineText(src: string, start: number, end: number, column: number): string {
+  let pos = start;
+  let width = column;
+  let hasTab = false;
+  while (pos < end) {
+    const code = src.charCodeAt(pos);
+    if (code === 32) {
+      width++;
+    } else if (code === 9) {
+      width += 4 - (width % 4);
+      hasTab = true;
+    } else {
+      break;
+    }
+    pos++;
+  }
+  return hasTab ? ' '.repeat(width - column) + sourceText(src, pos, end) : sourceText(src, start, end);
+}
+
 /** @hot */
 function quoteMarkerAt(src: string, start: number): number {
   let marker = start;
@@ -753,24 +772,26 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         }
 
         const itemStart = offset;
-        const firstLineEnd = lineEnd(src, offset + bulletIndent);
-        const firstLine = src.slice(offset + bulletIndent, firstLineEnd);
+        const firstLineStart = offset + bulletIndent;
+        const firstLineEnd = lineEnd(src, firstLineStart);
         offset = Math.min(src.length, firstLineEnd + 1);
 
-        let line = this.options.pedantic
-          ? expandTabs(firstLine, bulletIndent)
-          : firstLine.replace(this.rules.other.leadingSpaceTab, whitespace => expandTabs(whitespace, bulletIndent));
-        let nextLine = '';
-        let blankLine = trimStartOffset(line, 0, line.length) === line.length;
+        const pedantic = !!this.options.pedantic;
+        let line = pedantic
+          ? expandTabs(sourceText(src, firstLineStart, firstLineEnd), bulletIndent)
+          : listLineText(src, firstLineStart, firstLineEnd, bulletIndent);
+        let lineIndent = 0;
+        const trimmedStart = trimStartOffset(line, 0, line.length);
+        let blankLine = trimmedStart === line.length;
 
         let indent = 0;
         if (this.options.pedantic) {
           indent = 2;
-          itemContents = line.trimStart();
+          itemContents = sourceText(line, trimmedStart, line.length);
         } else if (blankLine) {
           indent = bulletIndent + 1;
         } else {
-          indent = line.search(this.rules.other.nonSpaceChar); // Find first non-space char
+          indent = skipSpaces(line, line.length);
           indent = indent > 4 ? 1 : indent; // Treat indented code blocks (> 4 spaces) as having only 1 indent
           itemContents = line.slice(indent);
           indent += bulletIndent;
@@ -788,7 +809,6 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
         if (!endEarly) {
           const maxIndent = Math.max(0, Math.min(3, indent - 1));
-          const pedantic = !!this.options.pedantic;
           const hrRegex = this.rules.other.hrRegex(indent);
           const htmlBeginRegex = this.rules.other.htmlBeginRegex(indent);
 
@@ -797,17 +817,10 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
           // Check if following lines should be included in List Item
           while (offset < src.length) {
-            const rawLine = src.slice(offset, lineEnd(src, offset));
-            let nextLineWithoutTabs;
-            nextLine = rawLine;
-
-            // Re-align to follow commonmark nesting rules
-            if (this.options.pedantic) {
-              nextLine = nextLine.replace(this.rules.other.listReplaceNesting, '  ');
-              nextLineWithoutTabs = nextLine;
-            } else {
-              nextLineWithoutTabs = nextLine.replace(this.rules.other.leadingSpaceTab, whitespace => expandTabs(whitespace));
-            }
+            const nextEnd = lineEnd(src, offset);
+            const rawLine = sourceText(src, offset, nextEnd);
+            // Pedantic parsing checks the line after realigning its indentation.
+            const nextLine = pedantic ? rawLine.replace(this.rules.other.listReplaceNesting, '  ') : rawLine;
 
             if (startsListInterrupt(nextLine, maxIndent, pedantic, true) || htmlBeginRegex.test(nextLine)) {
               break;
@@ -818,8 +831,11 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               break;
             }
 
-            if (nextLineWithoutTabs.search(this.rules.other.nonSpaceChar) >= indent || trimStartOffset(nextLine, 0, nextLine.length) === nextLine.length) { // Dedent if possible
-              itemContents += '\n' + nextLineWithoutTabs.slice(indent);
+            const nextLineWithoutTabs = pedantic ? nextLine : listLineText(rawLine, 0, rawLine.length, 0);
+            const nextIsBlank = trimStartOffset(nextLine, 0, nextLine.length) === nextLine.length;
+            if (skipSpaces(nextLineWithoutTabs, nextLineWithoutTabs.length) >= indent || nextIsBlank) {
+              itemContents += '\n';
+              itemContents += sourceText(nextLineWithoutTabs, indent, nextLineWithoutTabs.length);
               lineIsLazy = false;
             } else {
               // not enough indentation
@@ -831,8 +847,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               // nested list item or block quote. Look past their markers to the
               // block a lazy line would continue. Tabs are left alone because
               // their width depends on the column they start at.
-              let lastBlock = line;
-              if (!this.options.pedantic && !itemContents.includes('\n') && !line.includes('\t')) {
+              const previous = sourceText(line, lineIndent, line.length);
+              let lastBlock = previous;
+              if (!this.options.pedantic && !itemContents.includes('\n') && !previous.includes('\t')) {
                 let marker;
                 while (!hrRegex.test(lastBlock) && (marker = this.rules.other.nestedBlockMarker.exec(lastBlock))) {
                   lastBlock = lastBlock.slice(marker[0].length);
@@ -859,7 +876,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
                 // `line` is relative to the item content, so a block on it can be indented up to 3 spaces whatever
                 // the item indent is. A nested list item or blockquote on it, as in `- # heading` or `> ---`, holds
                 // a block that a lazy line cannot continue either, so check what follows those markers too.
-                const lastBlockLine = line.replace(this.rules.other.nestedContainerMarkers, '');
+                const lastBlockLine = previous.replace(this.rules.other.nestedContainerMarkers, '');
                 if (this.rules.block.fences.test(lastBlockLine) || this.rules.block.heading.test(lastBlockLine) || this.rules.block.hr.test(lastBlockLine)) {
                   break;
                 }
@@ -869,7 +886,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               // list indentation is removed. Keep it in the paragraph.
               const setextContinuation = !this.options.pedantic
                 && /^ {0,3}(?:=+|-+) *$/.test(nextLine)
-                && this.rules.block.lheading.test(`${line}\n${nextLine}`);
+                && this.rules.block.lheading.test(`${previous}\n${nextLine}`);
               const continuation = setextContinuation
                 ? `    ${nextLineWithoutTabs.replace(/^ {0,3}/, '')}`
                 : nextLine;
@@ -877,10 +894,10 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               lineIsLazy = true;
             }
 
-            blankLine = trimStartOffset(nextLine, 0, nextLine.length) === nextLine.length;
-
-            offset = Math.min(src.length, offset + rawLine.length + 1);
-            line = nextLineWithoutTabs.slice(indent);
+            blankLine = nextIsBlank;
+            offset = Math.min(src.length, nextEnd + 1);
+            line = nextLineWithoutTabs;
+            lineIndent = indent;
           }
         }
 
