@@ -369,19 +369,21 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   blockquote(src: string, offset = 0): Tokens.Blockquote | undefined {
     const cap = execAt(this.rules.block.blockquote, src, offset);
     if (cap) {
-      let remaining = rtrim(cap[0], '\n');
-      let raw = '';
+      let quoteEnd = offset + cap[0].length;
+      while (src.charCodeAt(quoteEnd - 1) === 10) quoteEnd--;
+      let position = offset;
+      let rawEnd = offset;
       let text = '';
       const tokens: Token[] = [];
 
-      while (remaining.length > 0) {
+      while (position < quoteEnd) {
         let inBlockquote = false;
-        let start = 0;
-        let end = 0;
+        let start = position;
+        let end = position;
 
-        while (start <= remaining.length) {
-          const line = lineEnd(remaining, start);
-          if (this.rules.other.blockquoteStart.test(remaining.slice(start, line))) {
+        while (start <= quoteEnd) {
+          const line = Math.min(lineEnd(src, start), quoteEnd);
+          if (execAt(this.rules.other.blockquoteStart, src, start)) {
             inBlockquote = true;
           } else if (inBlockquote) {
             break;
@@ -390,8 +392,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           start = line + 1;
         }
 
-        const currentRaw = end === remaining.length ? remaining : remaining.slice(0, end);
-        remaining = remaining.slice(end + 1);
+        const currentRaw = sourceText(src, position, end);
+        position = end + 1;
+        rawEnd = end;
         // Only the outermost block quote knows the original tab columns.
         let currentText = currentRaw;
         if (currentRaw.includes('\t')) {
@@ -412,7 +415,6 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           // precede setext continuation with 4 spaces so it isn't a setext
           .replace(this.rules.other.blockquoteSetextReplace, '\n    $1')
           .replace(this.rules.other.blockquoteSetextReplace2, '');
-        raw = raw ? `${raw}\n${currentRaw}` : currentRaw;
         text = text ? `${text}\n${currentText}` : currentText;
 
         // parse blockquote lines as top level tokens
@@ -426,7 +428,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         this.lexer.state.inBlockquote = outerInBlockquote;
 
         // if there is no continuation then we are done
-        if (remaining.length === 0) {
+        if (position >= quoteEnd) {
           break;
         }
 
@@ -442,7 +444,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           // nested blockquote, which already had one '>' marker stripped, so
           // strip one marker from them too. Otherwise a restated marker after a
           // lazy line is re-parsed as a spurious deeper blockquote.
-          const lines = remaining.split('\n');
+          const remaining = sourceText(src, position, quoteEnd);
           const newText = oldToken.raw + '\n' + remaining.replace(this.rules.other.blockquoteSetextReplace2, '');
           this.lexer.state.inBlockquote = true;
           const newToken = this.blockquote(newText)!;
@@ -452,44 +454,56 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           // Only include continuation lines the nested blockquote actually
           // consumed. Unconsumed trailing lines must stay out of `raw` so the
           // lexer can still tokenize them (paragraph, next blockquote, etc.).
-          const leftover = newText.substring(newToken.raw.length).replace(/^\n/, '');
-          const leftoverCount = leftover ? leftover.split('\n').length : 0;
-          const consumed = leftoverCount ? lines.slice(0, -leftoverCount) : lines;
-          if (consumed.length > 0) {
-            raw = `${raw}\n${consumed.join('\n')}`;
+          let leftoverStart = newToken.raw.length;
+          if (newText.charCodeAt(leftoverStart) === 10) leftoverStart++;
+          let leftoverCount = leftoverStart < newText.length ? 1 : 0;
+          for (let i = leftoverStart; i < newText.length; i++) {
+            if (newText.charCodeAt(i) === 10) leftoverCount++;
           }
-          text = text.substring(0, text.length - oldToken.text.length) + newToken.text;
+          if (leftoverCount === 0) {
+            rawEnd = quoteEnd;
+            position = quoteEnd;
+          } else {
+            let leftoverLine = quoteEnd;
+            while (leftoverCount-- > 0) {
+              leftoverLine = src.lastIndexOf('\n', leftoverLine - 1);
+              if (leftoverLine < position) break;
+            }
+            if (leftoverLine >= position) {
+              rawEnd = leftoverLine;
+              position = leftoverLine + 1;
+            }
+          }
+          text = sourceText(text, 0, text.length - oldToken.text.length) + newToken.text;
 
-          // A leftover line that starts with '>' still belongs to this
-          // blockquote; any other leftover line ends it.
-          remaining = lines.slice(consumed.length).join('\n');
-          if (remaining.length > 0 && this.rules.other.blockquoteStart.test(remaining)) {
+          // A leftover quote line belongs to this blockquote.
+          if (position < quoteEnd && execAt(this.rules.other.blockquoteStart, src, position)) {
             continue;
           }
           break;
         } else if (lastToken?.type === 'list') {
           // include continuation in nested list
           const oldToken = lastToken as Tokens.List;
-          const lines = remaining.split('\n');
-          const newText = oldToken.raw + '\n' + remaining;
+          const newText = oldToken.raw + '\n' + sourceText(src, position, quoteEnd);
           const newToken = this.list(newText)!;
           tokens[tokens.length - 1] = newToken;
 
-          // The list raw has no '>' markers, so it cannot be cut out of `raw`.
-          // Count the continuation lines the list took and add those lines instead.
-          const consumedCount = newToken.raw.length > oldToken.raw.length
-            ? newText.slice(oldToken.raw.length + 1, newToken.raw.length).split('\n').length
-            : 0;
-          if (consumedCount > 0) {
-            const consumed = lines.slice(0, consumedCount).join('\n');
-            raw = `${raw}\n${consumed}`;
-            text = `${text}\n${consumed}`;
+          // Count the continuation lines in the nested list's source.
+          if (newToken.raw.length > oldToken.raw.length) {
+            let consumed = 1;
+            for (let i = oldToken.raw.length + 1; i < newToken.raw.length; i++) {
+              if (newText.charCodeAt(i) === 10) consumed++;
+            }
+            let consumedEnd = position;
+            while (consumed-- > 0 && consumedEnd < quoteEnd) {
+              consumedEnd = Math.min(lineEnd(src, consumedEnd), quoteEnd) + 1;
+            }
+            rawEnd = consumedEnd - 1;
+            text += '\n' + sourceText(src, position, rawEnd);
+            position = consumedEnd;
           }
-          remaining = lines.slice(consumedCount).join('\n');
 
-          // A lazy line the list did not take is not a paragraph continuation,
-          // e.g. after an empty list item, so it ends the blockquote.
-          if (remaining.length > 0 && !this.rules.other.blockquoteStart.test(remaining)) {
+          if (position < quoteEnd && !execAt(this.rules.other.blockquoteStart, src, position)) {
             break;
           }
           continue;
@@ -498,7 +512,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
       return {
         type: 'blockquote',
-        raw,
+        raw: sourceText(src, offset, rawEnd),
         tokens,
         text,
       };
