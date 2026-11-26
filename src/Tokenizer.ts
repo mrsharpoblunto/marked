@@ -258,7 +258,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     this.options = options || _defaults;
   }
 
-  space(src: string, offset = 0): Tokens.Space | undefined {
+  space(src: string): Tokens.Space | undefined {
+    return this.spaceAt(src, 0);
+  }
+
+  /** @internal */
+  spaceAt(src: string, offset: number): Tokens.Space | undefined {
     let end = offset;
     let pos = offset;
     while (pos < src.length) {
@@ -280,7 +285,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
-  code(src: string, offset = 0): Tokens.Code | undefined {
+  code(src: string): Tokens.Code | undefined {
+    return this.codeAt(src, 0);
+  }
+
+  /** @internal */
+  codeAt(src: string, offset: number): Tokens.Code | undefined {
     const cap = execAt(this.rules.block.code, src, offset);
     if (cap) {
       const raw = this.options.pedantic
@@ -296,7 +306,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
-  fences(src: string, offset = 0): Tokens.Code | undefined {
+  fences(src: string): Tokens.Code | undefined {
+    return this.fencesAt(src, 0);
+  }
+
+  /** @internal */
+  fencesAt(src: string, offset: number): Tokens.Code | undefined {
     const cap = execAt(this.rules.block.fences, src, offset);
     if (cap) {
       const raw = cap[0];
@@ -316,7 +331,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
-  heading(src: string, offset = 0): Tokens.Heading | undefined {
+  heading(src: string): Tokens.Heading | undefined {
+    return this.headingAt(src, 0);
+  }
+
+  /** @internal */
+  headingAt(src: string, offset: number): Tokens.Heading | undefined {
     const cap = execAt(this.rules.block.heading, src, offset);
     if (cap) {
       let text = cap[2].trim();
@@ -342,7 +362,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
-  hr(src: string, offset = 0): Tokens.Hr | undefined {
+  hr(src: string): Tokens.Hr | undefined {
+    return this.hrAt(src, 0);
+  }
+
+  /** @internal */
+  hrAt(src: string, offset: number): Tokens.Hr | undefined {
     let end = offset;
     while (end < offset + 3 && src.charCodeAt(end) === 32) end++;
 
@@ -367,7 +392,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
-  blockquote(src: string, offset = 0): Tokens.Blockquote | undefined {
+  blockquote(src: string): Tokens.Blockquote | undefined {
+    return this.blockquoteAt(src, 0);
+  }
+
+  /** @internal */
+  blockquoteAt(src: string, offset: number): Tokens.Blockquote | undefined {
     const cap = execAt(this.rules.block.blockquote, src, offset);
     if (cap) {
       let quoteEnd = offset + cap[0].length;
@@ -520,7 +550,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
-  list(src: string, offset = 0): Tokens.List | undefined {
+  list(src: string): Tokens.List | undefined {
+    return this.listAt(src, 0);
+  }
+
+  /** @internal */
+  listAt(src: string, offset: number): Tokens.List | undefined {
     const standardRule = this.rules.block.list === standardListRule;
     const cap = standardRule ? undefined : execAt(this.rules.block.list, src, offset);
     const markerEnd = standardRule ? firstListMarkerEnd(src, offset) : cap?.[1].length ?? 0;
@@ -843,7 +878,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
-  html(src: string, offset = 0): Tokens.HTML | undefined {
+  html(src: string): Tokens.HTML | undefined {
+    return this.htmlAt(src, 0);
+  }
+
+  /** @internal */
+  htmlAt(src: string, offset: number): Tokens.HTML | undefined {
     const cap = execAt(this.rules.block.html, src, offset);
     if (cap) {
       // an html block of type 7 cannot interrupt a paragraph, so a lazy
@@ -864,7 +904,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
-  def(src: string, offset = 0): Tokens.Def | undefined {
+  def(src: string): Tokens.Def | undefined {
+    return this.defAt(src, 0);
+  }
+
+  /** @internal */
+  defAt(src: string, offset: number): Tokens.Def | undefined {
     const cap = execAt(this.rules.block.def, src, offset);
     if (cap) {
       // outside angle brackets a link destination holds only balanced parentheses
@@ -885,7 +930,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
-  table(src: string, offset = 0): Tokens.Table | undefined {
+  table(src: string): Tokens.Table | undefined {
+    return this.tableAt(src, 0);
+  }
+
+  /** @internal */
+  tableAt(src: string, offset: number): Tokens.Table | undefined {
     let headers: string[] | undefined;
     let aligns: string[] | undefined;
     if (this.options.gfm && !this.options.pedantic) {
@@ -961,7 +1011,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     return item;
   }
 
-  lheading(src: string, offset = 0): Tokens.Heading | undefined {
+  lheading(src: string): Tokens.Heading | undefined {
+    return this.lheadingAt(src, 0);
+  }
+
+  /** @internal */
+  lheadingAt(src: string, offset: number): Tokens.Heading | undefined {
     const cap = execAt(this.rules.block.lheading, src, offset);
     if (cap) {
       const text = cap[1].trim();
@@ -975,7 +1030,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
-  paragraph(src: string, offset = 0): Tokens.Paragraph | undefined {
+  paragraph(src: string): Tokens.Paragraph | undefined {
+    return this.paragraphAt(src, 0);
+  }
+
+  /** @internal */
+  paragraphAt(src: string, offset: number): Tokens.Paragraph | undefined {
     const rule = this.rules.block.paragraph;
     let raw: string;
     let text: string;
@@ -999,7 +1059,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     };
   }
 
-  text(src: string, offset = 0): Tokens.Text | undefined {
+  text(src: string): Tokens.Text | undefined {
+    return this.textAt(src, 0);
+  }
+
+  /** @internal */
+  textAt(src: string, offset: number): Tokens.Text | undefined {
     const cap = execAt(this.rules.block.text, src, offset);
     if (cap) {
       let raw = cap[0];
@@ -1020,8 +1085,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  escape(src: string): Tokens.Escape | undefined {
+    return this.escapeAt(src, 0);
+  }
+
+  /** @internal */
   /** @hot */
-  escape(src: string, offset = 0): Tokens.Escape | undefined {
+  escapeAt(src: string, offset: number): Tokens.Escape | undefined {
     if (src.charCodeAt(offset) !== 92) return; // \\
     const cap = execAt(this.rules.inline.escape, src, offset);
     if (cap) {
@@ -1033,8 +1103,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  tag(src: string): Tokens.Tag | undefined {
+    return this.tagAt(src, 0);
+  }
+
+  /** @internal */
   /** @hot */
-  tag(src: string, offset = 0): Tokens.Tag | undefined {
+  tagAt(src: string, offset: number): Tokens.Tag | undefined {
     if (src.charCodeAt(offset) !== 60) return; // <
     const cap = execAt(this.rules.inline.tag, src, offset);
     if (cap) {
@@ -1060,8 +1135,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  link(src: string): Tokens.Link | Tokens.Image | undefined {
+    return this.linkAt(src, 0);
+  }
+
+  /** @internal */
   /** @hot */
-  link(src: string, offset = 0): Tokens.Link | Tokens.Image | undefined {
+  linkAt(src: string, offset: number): Tokens.Link | Tokens.Image | undefined {
     // The link regex backtracks quadratically over unterminated-link inputs
     // like '[a](b'.repeat(n): at every '[' its greedy unquoted-href run
     // re-partitions the whole remainder while hunting for a ')' that never
@@ -1144,8 +1224,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  reflink(src: string, links: Links): Tokens.Link | Tokens.Image | Tokens.Text | undefined {
+    return this.reflinkAt(src, links, 0);
+  }
+
+  /** @internal */
   /** @hot */
-  reflink(src: string, links: Links, offset = 0): Tokens.Link | Tokens.Image | Tokens.Text | undefined {
+  reflinkAt(src: string, links: Links, offset: number): Tokens.Link | Tokens.Image | Tokens.Text | undefined {
     const first = src.charCodeAt(offset);
     if (first !== 91 && first !== 33) return; // [ or !
     let cap;
@@ -1169,8 +1254,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  emStrong(src: string, maskedSrc: string, prevChar = ''): Tokens.Em | Tokens.Strong | undefined {
+    return this.emStrongAt(src, maskedSrc, prevChar, 0);
+  }
+
+  /** @internal */
   /** @hot */
-  emStrong(src: string, maskedSrc: string, prevChar = '', offset = 0): Tokens.Em | Tokens.Strong | undefined {
+  emStrongAt(src: string, maskedSrc: string, prevChar: string, offset: number): Tokens.Em | Tokens.Strong | undefined {
     let match = execAt(this.rules.inline.emStrongLDelim, src, offset);
     if (!match) return;
     if (!match[1] && !match[2] && !match[3] && !match[4]) return;
@@ -1287,8 +1377,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  codespan(src: string): Tokens.Codespan | undefined {
+    return this.codespanAt(src, 0);
+  }
+
+  /** @internal */
   /** @hot */
-  codespan(src: string, offset = 0): Tokens.Codespan | undefined {
+  codespanAt(src: string, offset: number): Tokens.Codespan | undefined {
     if (src.charCodeAt(offset) !== 96) return; // `
     const cap = execAt(this.rules.inline.code, src, offset);
     if (cap) {
@@ -1306,8 +1401,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  br(src: string): Tokens.Br | undefined {
+    return this.brAt(src, 0);
+  }
+
+  /** @internal */
   /** @hot */
-  br(src: string, offset = 0): Tokens.Br | undefined {
+  brAt(src: string, offset: number): Tokens.Br | undefined {
     const first = src.charCodeAt(offset);
     if (first !== 32 && first !== 92 && first !== 10) return; // space, \\ or newline (breaks)
     const cap = execAt(this.rules.inline.br, src, offset);
@@ -1319,8 +1419,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  del(src: string, maskedSrc: string, prevChar = ''): Tokens.Del | undefined {
+    return this.delAt(src, maskedSrc, prevChar, 0);
+  }
+
+  /** @internal */
   /** @hot */
-  del(src: string, maskedSrc: string, prevChar = '', offset = 0): Tokens.Del | undefined {
+  delAt(src: string, maskedSrc: string, prevChar: string, offset: number): Tokens.Del | undefined {
     if (src.charCodeAt(offset) !== 126) return; // ~
     let match = execAt(this.rules.inline.delLDelim, src, offset);
     if (!match) return;
@@ -1379,8 +1484,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  autolink(src: string): Tokens.Link | undefined {
+    return this.autolinkAt(src, 0);
+  }
+
+  /** @internal */
   /** @hot */
-  autolink(src: string, offset = 0): Tokens.Link | undefined {
+  autolinkAt(src: string, offset: number): Tokens.Link | undefined {
     if (src.charCodeAt(offset) !== 60) return; // <
     const cap = execAt(this.rules.inline.autolink, src, offset);
     if (cap) {
@@ -1410,8 +1520,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  url(src: string): Tokens.Link | undefined {
+    return this.urlAt(src, 0);
+  }
+
+  /** @internal */
   /** @hot */
-  url(src: string, offset = 0): Tokens.Link | undefined {
+  urlAt(src: string, offset: number): Tokens.Link | undefined {
     let cap;
     if (cap = execAt(this.rules.inline.url, src, offset)) {
       let text, href;
@@ -1449,8 +1564,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  inlineText(src: string): Tokens.Text | undefined {
+    return this.inlineTextAt(src, 0);
+  }
+
+  /** @internal */
   /** @hot */
-  inlineText(src: string, offset = 0): Tokens.Text | undefined {
+  inlineTextAt(src: string, offset: number): Tokens.Text | undefined {
     const rule = this.rules.inline.text;
     let raw: string | undefined;
     if (rule === inline.normal.text) {

@@ -202,7 +202,7 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
       if (pack.tokenizer) {
         const tokenizer = this.defaults.tokenizer || new _Tokenizer<ParserOutput, RendererOutput>(this.defaults);
         for (const prop in pack.tokenizer) {
-          if (!(prop in tokenizer)) {
+          if (!(prop in tokenizer) || prop.endsWith('At')) {
             throw new Error(`tokenizer '${prop}' does not exist`);
           }
           if (['options', 'rules', 'lexer'].includes(prop)) {

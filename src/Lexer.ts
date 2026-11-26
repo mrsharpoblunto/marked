@@ -38,7 +38,6 @@ type TokenizerMethod = keyof typeof tokenizerFlags;
 type UserTokenizer = (src: string, ...args: unknown[]) => unknown;
 
 function adaptTokenizer(context: unknown, method: UserTokenizer, offsetIndex: number) {
-  /** @hotIgnore User adapter: one source suffix and argument array per replaced tokenizer call. */
   function adapted(src: string, ...args: unknown[]) {
     const offset = args[offsetIndex] as number;
     args.length = offsetIndex;
@@ -54,6 +53,7 @@ interface TokenizerDispatch<P, R> {
 
 const tokenizerDispatches = new WeakMap<object, unknown>();
 
+// These adapters call user code. The checker cannot follow the slots to them.
 function createTokenizerDispatch<P, R>(tokenizer: _Tokenizer<P, R>): TokenizerDispatch<P, R> {
   let slots = tokenizer;
   let replaced = 0;
@@ -63,7 +63,7 @@ function createTokenizerDispatch<P, R>(tokenizer: _Tokenizer<P, R>): TokenizerDi
     if (replaced === 0) slots = Object.create(tokenizer);
     replaced |= tokenizerFlags[name];
     const offsetIndex = name === 'emStrong' || name === 'del' ? 2 : name === 'reflink' ? 1 : 0;
-    Object.defineProperty(slots, name, { value: adaptTokenizer(tokenizer, method as UserTokenizer, offsetIndex) });
+    Object.defineProperty(slots, name + 'At', { value: adaptTokenizer(tokenizer, method as UserTokenizer, offsetIndex) });
   }
   return { slots, replaced };
 }
@@ -279,7 +279,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // newline
       if ((firstCode === 10 || firstCode === 32 || firstCode === 9
         || (this.#replaced & tokenizerFlags.space))
-        && (token = this.#slots.space(src, offset))) {
+        && (token = this.#slots.spaceAt(src, offset))) {
         offset += token.raw.length;
         const lastToken = tokens.at(-1);
         if (token.raw.length === 1 && lastToken !== undefined) {
@@ -295,7 +295,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // code
       if ((indent === 4 || marker === 9
         || (this.#replaced & tokenizerFlags.code))
-        && (token = this.#slots.code(src, offset))) {
+        && (token = this.#slots.codeAt(src, offset))) {
         offset += token.raw.length;
         const lastToken = tokens.at(-1);
         // An indented code block cannot interrupt a paragraph.
@@ -312,7 +312,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // fences
       if ((marker === 96 || marker === 126
         || (this.#replaced & tokenizerFlags.fences))
-        && (token = this.#slots.fences(src, offset))) {
+        && (token = this.#slots.fencesAt(src, offset))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -321,7 +321,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // heading
       if ((marker === 35
         || (this.#replaced & tokenizerFlags.heading))
-        && (token = this.#slots.heading(src, offset))) {
+        && (token = this.#slots.headingAt(src, offset))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -330,7 +330,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // hr
       if ((marker === 42 || marker === 45 || marker === 95
         || (this.#replaced & tokenizerFlags.hr))
-        && (token = this.#slots.hr(src, offset))) {
+        && (token = this.#slots.hrAt(src, offset))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -339,7 +339,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // blockquote
       if ((marker === 62
         || (this.#replaced & tokenizerFlags.blockquote))
-        && (token = this.#slots.blockquote(src, offset))) {
+        && (token = this.#slots.blockquoteAt(src, offset))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -348,7 +348,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // list
       if ((marker === 42 || marker === 43 || marker === 45 || (marker >= 48 && marker <= 57)
         || (this.#replaced & tokenizerFlags.list))
-        && (token = this.#slots.list(src, offset))) {
+        && (token = this.#slots.listAt(src, offset))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -357,7 +357,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // html
       if ((marker === 60 || (indent === 4 && this.options.pedantic)
         || (this.#replaced & tokenizerFlags.html))
-        && (token = this.#slots.html(src, offset))) {
+        && (token = this.#slots.htmlAt(src, offset))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -366,7 +366,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // def
       if ((marker === 91 || (indent === 4 && this.options.pedantic)
         || (this.#replaced & tokenizerFlags.def))
-        && (token = this.#slots.def(src, offset))) {
+        && (token = this.#slots.defAt(src, offset))) {
         offset += token.raw.length;
         const lastToken = tokens.at(-1);
         if (lastToken?.type === 'paragraph' || lastToken?.type === 'text') {
@@ -389,14 +389,14 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // table (gfm)
       if (((this.options.gfm && !this.options.pedantic)
         || (this.#replaced & tokenizerFlags.table))
-        && (token = this.#slots.table(src, offset))) {
+        && (token = this.#slots.tableAt(src, offset))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
       }
 
       // lheading
-      if (token = this.#slots.lheading(src, offset)) {
+      if (token = this.#slots.lheadingAt(src, offset)) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -406,7 +406,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // prevent paragraph consuming extensions by clipping 'src' to extension start
       const startExtensions = this.#extensions?.startBlock;
       const cutSrc = startExtensions?.length ? clipForExtensions(startExtensions, this, src, offset) : src;
-      if (this.state.top && (token = this.#slots.paragraph(cutSrc, offset))) {
+      if (this.state.top && (token = this.#slots.paragraphAt(cutSrc, offset))) {
         const lastToken = tokens.at(-1);
         // A table-shaped header rejected by the table tokenizer is still
         // paragraph continuation, not a new block. Keep custom paragraph
@@ -427,7 +427,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       }
 
       // text
-      if (token = this.#slots.text(src, offset)) {
+      if (token = this.#slots.textAt(src, offset)) {
         offset += token.raw.length;
         const lastToken = tokens.at(-1);
         if (lastToken?.type === 'text') {
@@ -575,7 +575,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // escape
       if ((firstCode === 92
         || (this.#replaced & tokenizerFlags.escape))
-        && (token = this.#slots.escape(src, offset))) {
+        && (token = this.#slots.escapeAt(src, offset))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -584,7 +584,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // tag
       if ((firstCode === 60
         || (this.#replaced & tokenizerFlags.tag))
-        && (token = this.#slots.tag(src, offset))) {
+        && (token = this.#slots.tagAt(src, offset))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -593,7 +593,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // link
       if ((firstCode === 91 || firstCode === 33
         || (this.#replaced & tokenizerFlags.link))
-        && (token = this.#slots.link(src, offset))) {
+        && (token = this.#slots.linkAt(src, offset))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -602,7 +602,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // reflink, nolink
       if ((firstCode === 91 || firstCode === 33
         || (this.#replaced & tokenizerFlags.reflink))
-        && (token = this.#slots.reflink(src, this.tokens.links, offset))) {
+        && (token = this.#slots.reflinkAt(src, this.tokens.links, offset))) {
         offset += token.raw.length;
         const lastToken = tokens.at(-1);
         if (token.type === 'text' && lastToken?.type === 'text') {
@@ -661,7 +661,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // em & strong
       if ((firstCode === 42 || firstCode === 95
         || (this.#replaced & tokenizerFlags.emStrong))
-        && (token = this.#slots.emStrong(src, maskedSrc, prevChar, offset))) {
+        && (token = this.#slots.emStrongAt(src, maskedSrc, prevChar, offset))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -670,7 +670,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // code
       if ((firstCode === 96
         || (this.#replaced & tokenizerFlags.codespan))
-        && (token = this.#slots.codespan(src, offset))) {
+        && (token = this.#slots.codespanAt(src, offset))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -679,7 +679,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // br
       if ((firstCode === 32 || firstCode === 92 || firstCode === 10
         || (this.#replaced & tokenizerFlags.br))
-        && (token = this.#slots.br(src, offset))) {
+        && (token = this.#slots.brAt(src, offset))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -688,7 +688,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // del (gfm)
       if ((firstCode === 126
         || (this.#replaced & tokenizerFlags.del))
-        && (token = this.#slots.del(src, maskedSrc, prevChar, offset))) {
+        && (token = this.#slots.delAt(src, maskedSrc, prevChar, offset))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -697,7 +697,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // autolink
       if ((firstCode === 60
         || (this.#replaced & tokenizerFlags.autolink))
-        && (token = this.#slots.autolink(src, offset))) {
+        && (token = this.#slots.autolinkAt(src, offset))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -710,7 +710,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
             || (firstCode >= 48 && firstCode <= 57) || firstCode === 46 || firstCode === 95
             || firstCode === 43 || firstCode === 45))
           || (this.#replaced & tokenizerFlags.url))
-        && (token = this.#slots.url(src, offset))) {
+        && (token = this.#slots.urlAt(src, offset))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -720,7 +720,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // prevent inlineText consuming extensions by clipping 'src' to extension start
       const startExtensions = this.#extensions?.startInline;
       const cutSrc = startExtensions?.length ? clipForExtensions(startExtensions, this, src, offset) : src;
-      if (token = this.#slots.inlineText(cutSrc, offset)) {
+      if (token = this.#slots.inlineTextAt(cutSrc, offset)) {
         offset += token.raw.length;
         const lastChar = token.raw.slice(-1);
         if (lastChar !== '_') { // Track prevChar before string of ____ started
