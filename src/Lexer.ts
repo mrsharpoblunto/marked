@@ -151,15 +151,17 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       this.state.lastToken = tokens.at(-1);
       let token: Tokens.Generic | undefined;
 
-      if (this.options.extensions?.block?.some((extTokenizer) => {
-        if (token = extTokenizer.call({ lexer: this }, src, tokens)) {
-          src = src.substring(token.raw.length);
-          tokens.push(token);
-          return true;
+      const extensions = this.options.extensions?.block;
+      if (extensions?.length) {
+        const count = extensions.length;
+        for (let i = 0; i < count; i++) {
+          if (i in extensions && (token = extensions[i].call({ lexer: this }, src, tokens))) {
+            src = src.substring(token.raw.length);
+            tokens.push(token);
+            break;
+          }
         }
-        return false;
-      })) {
-        continue;
+        if (token) continue;
       }
 
       const firstCode = src.charCodeAt(0);
@@ -298,16 +300,18 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // top-level paragraph
       // prevent paragraph consuming extensions by clipping 'src' to extension start
       let cutSrc = src;
-      if (this.options.extensions?.startBlock) {
+      const startExtensions = this.options.extensions?.startBlock;
+      if (startExtensions?.length) {
         let startIndex = Infinity;
         const tempSrc = src.slice(1);
-        let tempStart;
-        this.options.extensions.startBlock.forEach((getStartIndex) => {
-          tempStart = getStartIndex.call({ lexer: this }, tempSrc);
+        const count = startExtensions.length;
+        for (let i = 0; i < count; i++) {
+          if (!(i in startExtensions)) continue;
+          const tempStart = startExtensions[i].call({ lexer: this }, tempSrc);
           if (typeof tempStart === 'number' && tempStart >= 0) {
             startIndex = Math.min(startIndex, tempStart);
           }
-        });
+        }
         if (startIndex < Infinity && startIndex >= 0) {
           cutSrc = src.substring(0, startIndex + 1);
         }
@@ -469,15 +473,17 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       let token: Tokens.Generic | undefined;
 
       // extensions
-      if (this.options.extensions?.inline?.some((extTokenizer) => {
-        if (token = extTokenizer.call({ lexer: this }, src, tokens)) {
-          src = src.substring(token.raw.length);
-          tokens.push(token);
-          return true;
+      const extensions = this.options.extensions?.inline;
+      if (extensions?.length) {
+        const count = extensions.length;
+        for (let i = 0; i < count; i++) {
+          if (i in extensions && (token = extensions[i].call({ lexer: this }, src, tokens))) {
+            src = src.substring(token.raw.length);
+            tokens.push(token);
+            break;
+          }
         }
-        return false;
-      })) {
-        continue;
+        if (token) continue;
       }
 
       const firstCode = src.charCodeAt(0);
@@ -628,16 +634,18 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // text
       // prevent inlineText consuming extensions by clipping 'src' to extension start
       let cutSrc = src;
-      if (this.options.extensions?.startInline) {
+      const startExtensions = this.options.extensions?.startInline;
+      if (startExtensions?.length) {
         let startIndex = Infinity;
         const tempSrc = src.slice(1);
-        let tempStart;
-        this.options.extensions.startInline.forEach((getStartIndex) => {
-          tempStart = getStartIndex.call({ lexer: this }, tempSrc);
+        const count = startExtensions.length;
+        for (let i = 0; i < count; i++) {
+          if (!(i in startExtensions)) continue;
+          const tempStart = startExtensions[i].call({ lexer: this }, tempSrc);
           if (typeof tempStart === 'number' && tempStart >= 0) {
             startIndex = Math.min(startIndex, tempStart);
           }
-        });
+        }
         if (startIndex < Infinity && startIndex >= 0) {
           cutSrc = src.substring(0, startIndex + 1);
         }
