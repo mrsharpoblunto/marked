@@ -197,6 +197,8 @@ const standardListInterrupt = other.listInterruptsParagraph;
 const standardListHr = other.hrRegex;
 const standardNestedMarkers = other.nestedBlockMarker;
 const standardContainerMarkers = other.nestedContainerMarkers;
+const standardDefRule = block.normal.def;
+const pedanticDefRule = block.pedantic.def;
 const standardQuoteRule = block.normal.blockquote;
 const standardCodeRule = block.normal.code;
 const standardFenceRule = block.normal.fences;
@@ -406,6 +408,73 @@ function tableBodyEnd(src: string, first: number): number {
     start = Math.min(end + 1, src.length);
   }
   return start;
+}
+
+/** @hot */
+function definitionLabelEnd(src: string, start: number, pedantic: boolean): number {
+  let pos = start;
+  let nonSpace = pedantic;
+  while (pos < src.length) {
+    const code = src.charCodeAt(pos);
+    if (code === 93) return pos > start && nonSpace ? pos : -1;
+    if (!pedantic) {
+      if (code === 91) return -1;
+      if (code === 92) {
+        pos += 2;
+        nonSpace = true;
+        continue;
+      }
+      if (code === 10 && src.charCodeAt(blockContentStart(src, pos + 1)) === 10) return -1;
+      if (!isStringWhitespace(code)) nonSpace = true;
+    }
+    pos++;
+  }
+  return -1;
+}
+
+/** @hot */
+function angleDestinationEnd(src: string, start: number): number {
+  for (let pos = start + 1; pos < src.length; pos++) {
+    const code = src.charCodeAt(pos);
+    if (code === 62) return pos + 1;
+    if (code === 60 || code === 10) return -1;
+    if (code === 92) {
+      const escaped = src.charCodeAt(++pos);
+      if (escaped === 10 || escaped === 13 || escaped === 0x2028 || escaped === 0x2029) return -1;
+    }
+  }
+  return -1;
+}
+
+/** @hot */
+function definitionTitleEnd(src: string, start: number): number {
+  const opener = src.charCodeAt(start);
+  if (opener !== 34 && opener !== 39 && opener !== 40) return -1;
+  const closer = opener === 40 ? 41 : opener;
+  for (let pos = start + 1; pos < src.length; pos++) {
+    const code = src.charCodeAt(pos);
+    if (code === closer) return pos + 1;
+    if (code === 92) pos++;
+    else if (code === 40 && opener === 40) return -1;
+    else if (code === 10 && opener === 39 && src.charCodeAt(pos + 1) === 10) return -1;
+  }
+  return -1;
+}
+
+/** @hot */
+function definitionLineEnd(src: string, offset: number): number {
+  while (src.charCodeAt(offset) === 32) offset++;
+  return offset === src.length || src.charCodeAt(offset) === 10 ? offset : -1;
+}
+
+/** @hot */
+function pedanticTitleEnd(src: string, start: number): number {
+  const opener = src.charCodeAt(start);
+  if (opener !== 34 && opener !== 40) return -1;
+  let end = blockLineEnd(src, start);
+  while (src.charCodeAt(end - 1) === 32) end--;
+  const closer = src.charCodeAt(end - 1);
+  return end - start > 2 && (closer === 34 || closer === 41) ? end : -1;
 }
 
 /** @hot */
@@ -1484,6 +1553,55 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
   /** @internal */
   defAt(src: string, offset: number): Tokens.Def | undefined {
+    const rule = this.rules.block.def;
+    if (rule === standardDefRule || rule === pedanticDefRule) {
+      const pedantic = rule === pedanticDefRule;
+      let label = offset;
+      while (src.charCodeAt(label) === 32) {
+        if (!pedantic && label - offset === 3) break;
+        label++;
+      }
+      if (src.charCodeAt(label++) !== 91) return;
+      const labelEnd = definitionLabelEnd(src, label, pedantic);
+      if (labelEnd < 0 || src.charCodeAt(labelEnd + 1) !== 58) return;
+      let hrefStart = labelEnd + 2;
+      while (src.charCodeAt(hrefStart) === 32) hrefStart++;
+      if (!pedantic && src.charCodeAt(hrefStart) === 10) {
+        hrefStart = blockContentStart(src, hrefStart + 1);
+      }
+      let hrefEnd = hrefStart;
+      let destEnd = hrefStart;
+      if (!pedantic && src.charCodeAt(hrefStart) === 60) {
+        hrefEnd = destEnd = angleDestinationEnd(src, hrefStart);
+        if (hrefEnd < 0) return;
+      } else {
+        const angle = pedantic && src.charCodeAt(hrefStart) === 60;
+        if (angle && src.charCodeAt(hrefStart + 1) !== 62 && !isStringWhitespace(src.charCodeAt(hrefStart + 1)) && hrefStart + 1 < src.length) hrefStart++;
+        hrefEnd = hrefStart;
+        while (hrefEnd < src.length && !isStringWhitespace(src.charCodeAt(hrefEnd))) {
+          if (pedantic && src.charCodeAt(hrefEnd) === 62) break;
+          hrefEnd++;
+        }
+        if (hrefEnd === hrefStart) return;
+        destEnd = pedantic && src.charCodeAt(hrefEnd) === 62 ? hrefEnd + 1 : hrefEnd;
+      }
+
+      let titleStart = destEnd;
+      while (src.charCodeAt(titleStart) === 32) titleStart++;
+      if (!pedantic && src.charCodeAt(titleStart) === 10) titleStart = blockContentStart(src, titleStart + 1);
+      const titleEnd = titleStart === destEnd
+        ? -1
+        : pedantic ? pedanticTitleEnd(src, titleStart) : definitionTitleEnd(src, titleStart);
+      const titledEnd = titleEnd < 0 ? -1 : definitionLineEnd(src, titleEnd);
+      const end = titledEnd < 0 ? definitionLineEnd(src, destEnd) : titledEnd;
+      if (end < 0) return;
+      const href = sourceText(src, hrefStart, hrefEnd);
+      if (href.charCodeAt(0) !== 60 && findClosingParen(href) !== -1) return;
+      const tag = normalizeLabel(src, label, labelEnd);
+      const url = href.replace(this.rules.other.hrefBrackets, '$1').replace(this.rules.inline.anyPunctuation, '$1');
+      const title = titledEnd < 0 ? undefined : sourceText(src, titleStart + 1, titleEnd - 1).replace(this.rules.inline.anyPunctuation, '$1');
+      return createDef(tag, sourceText(src, offset, end), url, title!);
+    }
     const cap = execAt(this.rules.block.def, src, offset, this.rules.cursor?.block.def);
     if (cap) {
       // outside angle brackets a link destination holds only balanced parentheses
