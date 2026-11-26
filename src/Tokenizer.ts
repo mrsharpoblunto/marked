@@ -1008,11 +1008,19 @@ function listLineText(src: string, start: number, end: number, column: number): 
 
 /** @hot */
 function listLazyKind(src: string, previous: number, previousEnd: number, padding: number, offset: number,
-  maxIndent: number, first: boolean, checkStart: boolean, gfm: boolean): number {
+  maxIndent: number, first: boolean, checkStart: boolean, gfm: boolean, pedantic: boolean): number {
   let last = previous;
   let lead = padding;
-  const tab = src.indexOf('\t', previous);
-  if (first && (tab < 0 || tab >= previousEnd)) {
+  let tabbed = false;
+  if (first) {
+    for (let i = previous; i < previousEnd; i++) {
+      if (src.charCodeAt(i) === 9) {
+        tabbed = true;
+        break;
+      }
+    }
+  }
+  if (first && !tabbed) {
     while (!(lead <= maxIndent && listHasHr(src, last, maxIndent - lead))) {
       const after = nestedMarkerEnd(src, last, false, lead, previousEnd);
       if (after === last) break;
@@ -1032,7 +1040,7 @@ function listLazyKind(src: string, previous: number, previousEnd: number, paddin
     content++;
   }
   if (content < previousEnd && width >= 4) return 0;
-  if (lead <= maxIndent && (startsListInterrupt(src, maxIndent - lead, false, false, last, previousEnd)
+  if (lead <= maxIndent && (startsListInterrupt(src, maxIndent - lead, pedantic, false, last, previousEnd)
     || listHtmlBegins(src, last, previousEnd, maxIndent - lead) || listHasHr(src, last, maxIndent - lead))) return 0;
 
   if (checkStart) {
@@ -1050,7 +1058,7 @@ function listLazyKind(src: string, previous: number, previousEnd: number, paddin
         || listHasHr(src, nested, 3 - indent)) return 0;
     }
   }
-  if ((previous === previousEnd && padding === 0) || setextUnderlineStart(src, offset, true) < 0
+  if (pedantic || (previous === previousEnd && padding === 0) || setextUnderlineStart(src, offset, true) < 0
     || setextInterrupts(src, previous, gfm, true, padding)) return 1;
   for (let i = previous; i < previousEnd; i++) {
     const code = src.charCodeAt(i);
@@ -1646,6 +1654,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
       const list: Tokens.List = createList('', isordered, start, false);
 
+      const padPedantic = this.options.pedantic && this.rules.other.listReplaceNesting === standardListNesting
+        && this.rules.other.hrRegex === standardListHr && this.rules.other.htmlBeginRegex === standardListHtml
+        && src.indexOf('\t', offset) < 0;
       let previousBlankLine = false;
       // Check if current bullet point can start a new List Item
       while (offset < src.length) {
@@ -1672,7 +1683,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
         const pedantic = !!this.options.pedantic;
         let line: string | undefined;
-        if (pedantic) {
+        if (pedantic && !padPedantic) {
           tabSegments(src, firstLineStart, firstLineEnd, bulletIndent, segments);
           line = containerText(src, segments);
           segments.length = 0;
@@ -1687,7 +1698,8 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         let indent = 0;
         if (this.options.pedantic) {
           indent = 2;
-          itemContents = sourceText(line!, trimmedStart, line!.length);
+          if (padPedantic) segments.push(trimmedStart, firstLineEnd, 0);
+          else itemContents = sourceText(line!, trimmedStart, line!.length);
         } else if (blankLine) {
           indent = bulletIndent + 1;
         } else {
@@ -1744,12 +1756,17 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
             const width = pedantic ? skipSpaces(nextLine!, nextLine!.length) : listLeadingWidth(src, offset, nextEnd, 0);
             const nextIsBlank = trimStartOffset(nextSource, nextStart, nextLimit) === nextLimit;
             if (width >= indent || nextIsBlank) {
-              if (pedantic) {
+              if (pedantic && !padPedantic) {
                 itemContents += '\n';
                 itemContents += sourceText(nextLine!, indent, nextLine!.length);
               } else {
                 segments.push(offset - 1, offset, 0);
-                appendListContent(src, offset, nextEnd, 0, indent, 0, segments);
+                if (padPedantic) {
+                  const content = offset + skipSpacesAt(src, offset, nextEnd - offset);
+                  segments.push(Math.min(content + Math.max(0, indent - width), nextEnd), nextEnd, Math.max(0, width - indent));
+                } else {
+                  appendListContent(src, offset, nextEnd, 0, indent, 0, segments);
+                }
               }
               lineIsLazy = false;
             } else {
@@ -1758,17 +1775,27 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
                 break;
               }
 
-              if (scanLazy) {
+              if (scanLazy || padPedantic) {
                 let first = previousStart;
                 while (first < previousEnd && (src.charCodeAt(first) === 32 || src.charCodeAt(first) === 9)) first++;
-                const remaining = listLeadingWidth(src, previousStart, first, previousColumn) - lineIndent;
+                let leading = listLeadingWidth(src, previousStart, first, previousColumn);
+                if (pedantic && hasContinuation && leading && first < previousEnd) {
+                  leading += 1 - ((leading - 1) & 3);
+                }
+                const remaining = leading - lineIndent;
                 const previous = Math.min(first + Math.max(0, -remaining), previousEnd);
                 const lazy = listLazyKind(src, previous, previousEnd, Math.max(0, remaining), offset,
-                  maxIndent, !hasContinuation, !lineIsLazy, gfmSetext);
+                  maxIndent, !pedantic && !hasContinuation, !pedantic && !lineIsLazy, gfmSetext, pedantic);
                 if (!lazy) break;
                 segments.push(offset - 1, offset, 0);
-                if (lazy === 2) appendListContent(src, offset, nextEnd, 0, Math.min(width, 3), 4, segments);
-                else segments.push(offset, nextEnd, 0);
+                if (padPedantic) {
+                  const content = offset + skipSpacesAt(src, offset, nextEnd - offset);
+                  segments.push(content, nextEnd, width);
+                } else if (lazy === 2) {
+                  appendListContent(src, offset, nextEnd, 0, Math.min(width, 3), 4, segments);
+                } else {
+                  segments.push(offset, nextEnd, 0);
+                }
               } else {
               // The first line of an item always starts a block, which can be a
               // nested list item or block quote. Look past their markers to the
@@ -1876,7 +1903,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           }
         }
 
-        if (!pedantic) itemContents = containerText(src, segments);
+        if (!pedantic || padPedantic) itemContents = containerText(src, segments);
         let task = false;
         if (this.options.gfm) {
           if (this.rules.other.listIsTask === standardIsTask) {
