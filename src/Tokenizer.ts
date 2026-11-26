@@ -27,6 +27,7 @@ import {
 } from './helpers.ts';
 import { _tag, block, inline, other, paragraphHtmlStart, type Rules } from './rules.ts';
 import type { InlineRuns } from './helpers.ts';
+import { delimiterOpener } from './InlineMask.ts';
 import type { _Lexer } from './Lexer.ts';
 import type { Links, Tokens, Token } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
@@ -2474,13 +2475,25 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   /** @internal */
   /** @hot */
   emStrongAt(src: string, maskedSrc: string, prevChar: string, offset: number, lastPossibleEmStrongCloserIndex: number, runs?: InlineRuns, base = maskedSrc.length - src.length): Tokens.Em | Tokens.Strong | undefined {
-    let match = execAt(this.rules.inline.emStrongLDelim, src, offset, this.rules.cursor?.inline.emStrongLDelim);
-    if (!match) return;
-    const following = match[1] || match[2] || match[3] || match[4];
-    if (!following) return;
-    const delimiter = match[0].charCodeAt(0);
+    let match: RegExpExecArray | null;
+    let opener: number;
+    let delimiter: number;
+    const pedantic = !!this.options.pedantic;
+    if (runs) {
+      delimiter = src.charCodeAt(offset);
+      opener = delimiterOpener(runs.mask, src, offset, delimiter, runs.gfm, pedantic);
+      if (!opener) return;
+    } else {
+      match = execAt(this.rules.inline.emStrongLDelim, src, offset, this.rules.cursor?.inline.emStrongLDelim);
+      if (!match) return;
+      const following = match[1] || match[2] || match[3] || match[4];
+      if (!following) return;
+      delimiter = match[0].charCodeAt(0);
+      if (delimiter !== 42 && delimiter !== 95) return;
+      opener = match[0].length - following.length;
+      if (match[1] || match[3]) opener = -opener;
+    }
     const star = delimiter === 42;
-    if (!star && delimiter !== 95) return;
     // A mid-run opener (for example the second star of an unmatched `**`) must
     // only pair with a delimiter that can only close, otherwise it steals the
     // opener of a later span (`**a*b*c` must be `**a<em>b</em>c`).
@@ -2508,7 +2521,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     const prevPunct = startedBeforeOffset ? runPrevPunct : punctuationBeforeDelimiter(prevChar, 0, prevChar.length, this.rules);
 
     // An underscore cannot open between letters or numbers.
-    if (match[4]) {
+    if (!star && opener > 0) {
       if (startedBeforeOffset) {
         if (runStart > boundary && (maskedPrev >= 0 ? maskedPrev === 97 : alphaNumericAt(maskedSrc, previousStart, prevWidth, this.rules))) return;
       } else if (prevChar.length === 1
@@ -2518,10 +2531,10 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       }
     }
 
-    const punctAfter = !!(match[1] || match[3]);
+    const punctAfter = opener < 0;
     const hasPrevious = startedBeforeOffset ? runStart > boundary : prevChar.length > 0;
     if (!punctAfter || !hasPrevious || prevPunct) {
-      const lLength = match[0].length - following.length;
+      const lLength = Math.abs(opener);
       let rDelim, rLength, delimTotal = lLength, midDelimTotal = 0;
 
       // Rules 9-10 count the whole run, and also apply when the opener could
@@ -2538,7 +2551,6 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       const defaultCloser = runs !== undefined;
       const window = defaultCloser ? '' : userCloserWindow(closerRule, maskedSrc, offset - src.length + lLength);
       const endReg = defaultCloser ? undefined : closerRule;
-      const pedantic = !!this.options.pedantic;
       let cursor = defaultCloser ? inlineRunAt(runs!, orphanDelimiterEnd(runs!, scanStart, limit, delimiter) + 1) : 0;
       for (;;) {
         let type: number;
@@ -2657,14 +2669,23 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   /** @hot */
   delAt(src: string, maskedSrc: string, prevChar: string, offset: number, lastPossibleDelCloserIndex: number, runs?: InlineRuns, base = maskedSrc.length - src.length): Tokens.Del | undefined {
     if (src.charCodeAt(offset) !== 126) return; // ~
-    let match = execAt(this.rules.inline.delLDelim, src, offset, this.rules.cursor?.inline.delLDelim);
-    if (!match) return;
+    let match: RegExpExecArray | null;
+    let opener: number;
+    if (runs) {
+      opener = delimiterOpener(runs.mask, src, offset, 126, runs.gfm, false);
+      if (!opener) return;
+    } else {
+      match = execAt(this.rules.inline.delLDelim, src, offset, this.rules.cursor?.inline.delLDelim);
+      if (!match) return;
+      opener = match[0].charCodeAt(1) === 126 ? 2 : 1;
+      if (match[1]) opener = -opener;
+    }
 
-    const nextChar = match[1] || '';
-
-    if (!nextChar || !prevChar || this.rules.inline.punctuation.exec(prevChar)) {
-      // unicode Regex counts emoji as 1 char; spread into array for proper count
-      const lLength = match[0].charCodeAt(1) === 126 ? 2 : 1;
+    if (opener > 0 || !prevChar || (runs
+      ? prevChar.charCodeAt(0) !== 42 && prevChar.charCodeAt(0) !== 95
+        && punctuationBeforeDelimiter(prevChar, 0, prevChar.length, this.rules)
+      : this.rules.inline.punctuation.exec(prevChar))) {
+      const lLength = Math.abs(opener);
       let rDelim, rLength, delimTotal = lLength;
 
       const closerRule = this.rules.inline.delRDelim;

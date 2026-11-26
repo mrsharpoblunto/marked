@@ -4,6 +4,7 @@ import type { Links } from './Tokens.ts';
 
 export interface InlineMask {
   codes: Uint16Array;
+  openerEnds: Int32Array;
   length: number;
   changed: boolean;
 }
@@ -14,12 +15,23 @@ export function copyInlineCodes(mask: InlineMask, source: string): void {
   mask.length = source.length;
   mask.changed = false;
   const codes = mask.codes;
-  for (let i = 0; i < source.length; i++) codes[i] = source.charCodeAt(i);
+  const ends = mask.openerEnds;
+  let runEnd = source.length;
+  let next = -1;
+  for (let i = source.length - 1; i >= 0; i--) {
+    const code = source.charCodeAt(i);
+    codes[i] = code;
+    if (code !== next) runEnd = i + 1;
+    if (code === 42 || code === 95 || code === 126) ends[i] = runEnd;
+    next = code;
+  }
 }
 
 /** @hot */
 function growInlineCodes(mask: InlineMask, size: number): void {
-  mask.codes = new Uint16Array(Math.max(size, 64, mask.codes.length * 2));
+  const length = Math.max(size, 64, mask.codes.length * 2);
+  mask.codes = new Uint16Array(length);
+  mask.openerEnds = new Int32Array(length);
 }
 
 /** @hot */
@@ -241,6 +253,28 @@ export function isInlinePunctuation(code: number, source: string, offset: number
   }
   unicodePunctuation.lastIndex = offset;
   return unicodePunctuation.test(source);
+}
+
+const unicodeOpenQuote = /[\p{Pi}\p{Ps}]/uy;
+
+/** @hot */
+function isOpenQuote(code: number, source: string, offset: number): boolean {
+  if (code <= 127) return code === 34 || code === 39 || code === 40 || code === 91 || code === 123;
+  unicodeOpenQuote.lastIndex = offset;
+  return unicodeOpenQuote.test(source);
+}
+
+/** @hot */
+export function delimiterOpener(mask: InlineMask, source: string, offset: number, delimiter: number, gfm: boolean, pedantic: boolean): number {
+  const end = mask.openerEnds[offset];
+  const length = end - offset;
+  if (end >= source.length || (delimiter === 126 && (!gfm || length > 2))) return 0;
+  const next = source.charCodeAt(end);
+  if (isStringWhitespace(next)) return 0;
+  if ((next === 126 && gfm && delimiter !== 126)
+    || !isInlinePunctuation(next, source, end)
+    || (pedantic && isOpenQuote(next, source, end))) return length;
+  return -length;
 }
 
 /** @hot */

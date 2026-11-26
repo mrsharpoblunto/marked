@@ -5,7 +5,7 @@ import { _defaults } from './defaults.ts';
 import { other, block, inline, type Rules } from './rules.ts';
 import { callMaskHook, hookSlots } from './HookDispatch.ts';
 import { execAt, normalizeLabel, preparedLexerRules, scanCloserHints, scanInlineRuns, sourceText } from './helpers.ts';
-import type { CloserHints, InlineRuns } from './helpers.ts';
+import type { InlineRuns } from './helpers.ts';
 import { copyInlineCodes, inlineMaskText, maskBlocks, maskEscapes, maskReferences } from './InlineMask.ts';
 import type { Token, TokensList, Tokens } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
@@ -219,6 +219,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     this.#userMaskRules = rules.inline.reflinkSearch !== standardReferenceMask
       || rules.inline.anyPunctuationOutsideCode !== standardEscapeMask || rules.inline.blockSkip !== standardBlockMask;
     this.#userDelimiters = !!this.#maskHook || !!(this.#replaced & (tokenizerFlags.emStrong | tokenizerFlags.del))
+      || rules.cursor!.inline.emStrongLDelim.original !== rules.inline.emStrongLDelim
+      || rules.cursor!.inline.delLDelim.original !== rules.inline.delLDelim
       || rules.cursor!.inline.star.original !== rules.inline.emStrongRDelimAst
       || rules.cursor!.inline.underscore.original !== rules.inline.emStrongRDelimUnd
       || (rules.inline.delRDelim !== standardNoDelCloser && rules.cursor!.inline.tilde?.original !== rules.inline.delRDelim);
@@ -621,8 +623,10 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     const { star, underscore, tilde } = hints;
     const depth = this.#runDepth++;
     const runs = this.#runTables[depth] ??= {
-      entries: new Int32Array(0), length: 0, gfm: false,
-      mask: { codes: new Uint16Array(0), length: 0, changed: false },
+      entries: new Int32Array(0),
+      length: 0,
+      gfm: false,
+      mask: { codes: new Uint16Array(0), openerEnds: new Int32Array(0), length: 0, changed: false },
     };
     try {
       const rules = this.tokenizer.rules;
