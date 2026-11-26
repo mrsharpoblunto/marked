@@ -1045,12 +1045,10 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     // unicode punctuation, so an escaped astral character is 3 code units.
     // A backslash inside a code span is literal, not an escape. Mask the
     // backticks inside the span instead, so blockSkip still skips all of it.
-    if (maskedSrc.includes('\\') || maskedSrc.includes('`')) {
-      maskedSrc = maskedSrc.replace(this.tokenizer.rules.inline.anyPunctuationOutsideCode, (match: string, ticks: string | undefined, punctuation: string | undefined) => {
-        if (punctuation) return '+'.repeat(match.length);
-        return ticks ? ticks + match.slice(ticks.length, -ticks.length).replace(/`/g, '+') + ticks : match;
-      });
-    }
+    maskedSrc = maskedSrc.replace(this.tokenizer.rules.inline.anyPunctuationOutsideCode, (match: string, ticks: string | undefined, punctuation: string | undefined) => {
+      if (punctuation) return '+'.repeat(match.length);
+      return ticks ? ticks + match.slice(ticks.length, -ticks.length).replace(/`/g, '+') + ticks : match;
+    });
 
     const { blockSkip, tag, autolink } = this.tokenizer.rules.inline;
     const cursor = this.tokenizer.rules.cursor?.inline;
