@@ -288,7 +288,6 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @internal */
-  /** @hot */
   tablerowAt(token: Tokens.TableRow<ParserOutput>, output: OutputBuffer): void {
     emit(output, '<tr>\n');
     emit(output, token.text);

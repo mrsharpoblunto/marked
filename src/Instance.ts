@@ -316,6 +316,42 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
     return _Parser.parse<ParserOutput, RendererOutput>(tokens, options ?? this.defaults);
   }
 
+  #defaultCompilation: {
+    lexer: _Lexer<ParserOutput, RendererOutput>;
+    parser: _Parser<ParserOutput, RendererOutput>;
+    gfm: boolean | undefined;
+    breaks: boolean | undefined;
+    pedantic: boolean | undefined;
+    silent: boolean | undefined;
+  } | undefined;
+
+  #compiling = false;
+
+  #compileDefault(src: string, block: boolean): ParserOutput {
+    const { gfm, breaks, pedantic, silent } = this.defaults;
+    let state = this.#defaultCompilation;
+    if (!state || state.gfm !== gfm || state.breaks !== breaks || state.pedantic !== pedantic || state.silent !== silent) {
+      const options = { ...this.defaults };
+      state = {
+        lexer: new _Lexer(options),
+        parser: new _Parser(options),
+        gfm,
+        breaks,
+        pedantic,
+        silent,
+      };
+      this.#defaultCompilation = state;
+    }
+    this.#compiling = true;
+    try {
+      const tokens = block ? state.lexer.lex(src) : state.lexer.inlineTokens(src);
+      return state.parser.parseKnown(tokens, block);
+    } finally {
+      state.lexer.clearDefault();
+      this.#compiling = false;
+    }
+  }
+
   private parseMarkdown(blockType: boolean) {
     type overloadedParse = {
       (src: string, options: MarkedOptions<ParserOutput, RendererOutput> & { async: true }): Promise<ParserOutput>;
@@ -325,6 +361,17 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const parse: overloadedParse = (src: string, options?: MarkedOptions<ParserOutput, RendererOutput> | null): any => {
+      const defaults = this.defaults;
+      if (typeof src === 'string' && options == null && !this.#compiling
+        && !defaults.async && !defaults.hooks && !defaults.tokenizer && !defaults.renderer
+        && !defaults.extensions && !defaults.walkTokens) {
+        try {
+          return this.#compileDefault(src, blockType);
+        } catch(error) {
+          return this.onError(!!defaults.silent, false)(error as Error);
+        }
+      }
+
       const origOpt = { ...options };
       const opt = { ...this.defaults, ...origOpt };
 

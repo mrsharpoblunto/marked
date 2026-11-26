@@ -194,6 +194,20 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     this.tokenizer.rules = rules;
   }
 
+  /** @internal */
+  clearDefault(): void {
+    this.tokens.length = 0;
+    this.tokens.links = Object.create(null);
+    this.inlineQueue.length = 0;
+    this.state.inLink = false;
+    this.state.inRawBlock = false;
+    this.state.linkEmitted = false;
+    this.state.linkParenPossible = true;
+    this.state.top = true;
+    this.state.inBlockquote = false;
+    this.state.lastToken = undefined;
+  }
+
   /**
    * Expose Rules
    */
