@@ -1451,11 +1451,26 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           const continuation = this.rules.other.blockquoteSetextReplace2 === standardQuotePrefix
             ? stripQuoteMarkers(src, position, quoteEnd)
             : replaceUserContainerRule(this.rules.other.blockquoteSetextReplace2, src, position, quoteEnd, '');
-          const newText = oldToken.raw + '\n' + continuation;
+          const checkpoint = this.lexer.canResumeContainer() ? this.quoteLeafCheckpoint(oldToken) : -1;
+          const oldTextLength = oldToken.text.length;
+          let newText: string;
+          let newToken: Tokens.Blockquote;
           this.lexer.state.inBlockquote = true;
-          const newToken = this.blockquote(newText)!;
+          if (checkpoint >= 0) {
+            const leaf = oldToken.tokens.at(-1) as Tokens.Paragraph;
+            newText = sourceText(oldToken.raw, checkpoint, oldToken.raw.length) + '\n' + continuation;
+            const tail = this.blockquoteAt(newText, 0)!;
+            oldToken.raw = sourceText(oldToken.raw, 0, checkpoint) + tail.raw;
+            oldToken.text = sourceText(oldToken.text, 0, oldToken.text.length - leaf.text.length) + tail.text;
+            oldToken.tokens.pop();
+            for (let j = 0; j < tail.tokens.length; j++) oldToken.tokens.push(tail.tokens[j]);
+            newToken = tail;
+          } else {
+            newText = oldToken.raw + '\n' + continuation;
+            newToken = this.blockquote(newText)!;
+          }
           this.lexer.state.inBlockquote = outerInBlockquote;
-          tokens[tokens.length - 1] = newToken;
+          tokens[tokens.length - 1] = checkpoint < 0 ? newToken : oldToken;
 
           // Only include continuation lines the nested blockquote actually
           // consumed. Unconsumed trailing lines must stay out of `raw` so the
@@ -1480,7 +1495,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               position = leftoverLine + 1;
             }
           }
-          text = text.slice(0, text.length - oldToken.text.length) + newToken.text;
+          text = text.slice(0, text.length - oldTextLength) + (checkpoint < 0 ? newToken.text : oldToken.text);
 
           // A leftover quote line belongs to this blockquote.
           if (position < quoteEnd && quoteMarkerAt(src, position) >= 0) {
@@ -1490,6 +1505,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         } else if (kind === TokenKind.List) {
           // include continuation in nested list
           const oldToken = lastToken as Tokens.List;
+          if (this.lexer.canResumeContainer() && isPlainLazyLine(src, position, quoteEnd)
+            && this.resumeListParagraph(oldToken, src, position - 1, quoteEnd)) {
+            text += sourceText(src, position - 1, quoteEnd);
+            rawEnd = quoteEnd;
+            break;
+          }
+
           const newText = oldToken.raw + '\n' + src.slice(position, quoteEnd);
           const newToken = this.list(newText)!;
           tokens[tokens.length - 1] = newToken;
@@ -1518,6 +1540,42 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
       return createBlockquote(sourceText(src, offset, rawEnd), text, tokens);
     }
+  }
+
+  /** @hot */
+  private quoteLeafCheckpoint(token: Tokens.Blockquote): number {
+    const leaf = token.tokens.at(-1) as Tokens.Paragraph | undefined;
+    const before = token.tokens.at(-2);
+    if (leaf?.kind !== TokenKind.Paragraph || !before || leaf.text !== leaf.raw
+      || !token.text.endsWith(leaf.text)) return -1;
+    const beforeKind = this.lexer.blockKind(before);
+    if (beforeKind !== TokenKind.Hr && beforeKind !== TokenKind.Heading) return -1;
+    const line = token.raw.lastIndexOf('\n') + 1;
+    if (!line || token.raw.charCodeAt(line) !== 62 || token.raw.charCodeAt(line + 1) !== 32
+      || leaf.raw.length !== token.raw.length - line - 2
+      || !isPlainLazyLine(token.raw, line + 2, token.raw.length)) return -1;
+    return line;
+  }
+
+  /** @hot */
+  private resumeListParagraph(list: Tokens.List, src: string, start: number, end: number): boolean {
+    const item = list.items.at(-1);
+    if (!item || item.task || item.tokens.length !== 1 || item.raw.length !== item.text.length + 2
+      || item.raw.charCodeAt(1) !== 32 || !isPlainLazyLine(item.text, 0, item.text.length)) return false;
+    const marker = item.raw.charCodeAt(0);
+    if (marker !== 42 && marker !== 43 && marker !== 45) return false;
+    const child = item.tokens[0] as Tokens.Text | Tokens.Paragraph;
+    const entry = this.lexer.inlineQueue.at(-1);
+    const kind = this.lexer.blockKind(child);
+    if ((kind !== TokenKind.Text && kind !== TokenKind.Paragraph)
+      || child.raw !== item.text || child.text !== item.text
+      || !entry || entry.tokens !== child.tokens) return false;
+    const addition = sourceText(src, start, end);
+    list.raw += addition;
+    item.raw += addition;
+    item.text += addition;
+    child.raw = child.text = entry.src = item.text;
+    return true;
   }
 
   /** @hot */
