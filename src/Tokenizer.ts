@@ -601,19 +601,33 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               nextLineWithoutTabs = nextLine.replace(this.rules.other.leadingSpaceTab, whitespace => expandTabs(whitespace));
             }
 
-            let start = 0;
-            let firstCode = nextLine.charCodeAt(start);
-            while (firstCode === 32 && start < 4) {
-              firstCode = nextLine.charCodeAt(++start);
+            // End list item if found code fences
+            if (fencesBeginRegex.test(nextLine)) {
+              break;
             }
 
-            if (((firstCode === 96 || firstCode === 126) && fencesBeginRegex.test(nextLine))
-              || (firstCode === 35 && headingBeginRegex.test(nextLine))
-              || (firstCode === 60 && htmlBeginRegex.test(nextLine))
-              || (firstCode === 62 && blockquoteBeginRegex.test(nextLine))
-              || ((firstCode === 42 || firstCode === 43 || firstCode === 45
-                || (firstCode >= 48 && firstCode <= 57)) && nextBulletRegex.test(nextLine))
-              || ((firstCode === 42 || firstCode === 45 || firstCode === 95) && hrRegex.test(nextLine))) {
+            // End list item if found start of new heading
+            if (headingBeginRegex.test(nextLine)) {
+              break;
+            }
+
+            // End list item if found start of html block
+            if (htmlBeginRegex.test(nextLine)) {
+              break;
+            }
+
+            // End list item if found start of blockquote
+            if (blockquoteBeginRegex.test(nextLine)) {
+              break;
+            }
+
+            // End list item if found start of new bullet
+            if (nextBulletRegex.test(nextLine)) {
+              break;
+            }
+
+            // Horizontal rule found
+            if (hrRegex.test(nextLine)) {
               break;
             }
 
