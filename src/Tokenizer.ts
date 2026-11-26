@@ -1,4 +1,4 @@
-import { BlockLineView, type BlockSource, blockContentStart, blockIndent, blockIndentEnd, blockLineEnd, thematicBreakEnd } from './BlockLine.ts';
+import { blockContentStart, blockIndent, blockIndentEnd, blockLineEnd, thematicBreakEnd } from './BlockLine.ts';
 import { TokenKind } from './tokenKind.ts';
 import {
   createBlockquote, createBr, createCheckbox, createCode, createCodespan,
@@ -19,8 +19,6 @@ import {
   execAt,
   testCharacterAt,
   sourceText,
-  blockSourceText,
-  execBlockRule,
   trimStartOffset,
   trimEndOffset,
   isStringWhitespace,
@@ -224,17 +222,7 @@ const standardTableRule = block.gfm.table;
 const noTableRule = block.normal.table;
 
 /** @hot */
-function testHtmlInterrupt(src: BlockSource, start: number): boolean {
-  if (typeof src !== 'string') {
-    htmlInterrupt.lastIndex = 0;
-    return htmlInterrupt.test(src.slice(start));
-  }
-  htmlInterrupt.lastIndex = start;
-  return htmlInterrupt.test(src);
-}
-
-/** @hot */
-function headingMarkerEnd(src: BlockSource, start: number, pedantic: boolean): number {
+function headingMarkerEnd(src: string, start: number, pedantic: boolean): number {
   if (src.charCodeAt(start) !== 35) return start;
   let end = start + 1;
   while (end - start < 6 && src.charCodeAt(end) === 35) end++;
@@ -242,7 +230,7 @@ function headingMarkerEnd(src: BlockSource, start: number, pedantic: boolean): n
 }
 
 /** @hot */
-function fenceMarkerEnd(src: BlockSource, start: number): number {
+function fenceMarkerEnd(src: string, start: number): number {
   const marker = src.charCodeAt(start);
   let end = start;
   while (src.charCodeAt(end) === marker) end++;
@@ -250,7 +238,7 @@ function fenceMarkerEnd(src: BlockSource, start: number): number {
 }
 
 /** @hot */
-function codeBlockEnd(src: BlockSource, offset: number): number {
+function codeBlockEnd(src: string, offset: number): number {
   let end = offset;
   while (end < src.length) {
     const indent = blockIndentEnd(src, end);
@@ -269,7 +257,7 @@ function codeBlockEnd(src: BlockSource, offset: number): number {
 }
 
 /** @hot */
-function stripCodeIndent(src: BlockSource, start: number, end: number): string {
+function stripCodeIndent(src: string, start: number, end: number): string {
   let out = '';
   let copyStart = start;
   for (let line = start; line < end; line = blockLineEnd(src, line) + 1) {
@@ -277,14 +265,14 @@ function stripCodeIndent(src: BlockSource, start: number, end: number): string {
     while (stripped - line < 4 && src.charCodeAt(stripped) === 32) stripped++;
     if (stripped - line < 4 && src.charCodeAt(stripped) === 9) stripped++;
     if (stripped === line) continue;
-    out += blockSourceText(src, copyStart, line);
+    out += sourceText(src, copyStart, line);
     copyStart = stripped;
   }
-  return out + blockSourceText(src, copyStart, end);
+  return out + sourceText(src, copyStart, end);
 }
 
 /** @hot */
-function setextTableDelimiter(src: BlockSource, start: number): boolean {
+function setextTableDelimiter(src: string, start: number): boolean {
   let pipe = false;
   for (let i = start; i < src.length; i++) {
     const code = src.charCodeAt(i);
@@ -296,7 +284,7 @@ function setextTableDelimiter(src: BlockSource, start: number): boolean {
 }
 
 /** @hot */
-function setextInterrupts(src: BlockSource, start: number, gfm: boolean, first: boolean): boolean {
+function setextInterrupts(src: string, start: number, gfm: boolean, first: boolean): boolean {
   let marker = start;
   while (marker - start < 4 && src.charCodeAt(marker) === 32) marker++;
   const code = src.charCodeAt(marker);
@@ -305,7 +293,8 @@ function setextInterrupts(src: BlockSource, start: number, gfm: boolean, first: 
   if (code === 35 && headingMarkerEnd(src, marker, false) !== marker) return true;
   if ((code === 96 || code === 126) && src.charCodeAt(marker + 1) === code && src.charCodeAt(marker + 2) === code) return true;
   if (code === 60) {
-    if (testHtmlInterrupt(src, start)) return true;
+    htmlInterrupt.lastIndex = start;
+    if (htmlInterrupt.test(src)) return true;
   }
   if ((code === 45 || code === 95 || code === 42) && !first && thematicBreakEnd(src, marker) >= 0) return true;
   const bullet = firstListMarkerEnd(src, start);
@@ -314,7 +303,7 @@ function setextInterrupts(src: BlockSource, start: number, gfm: boolean, first: 
 }
 
 /** @hot */
-function setextUnderlineStart(src: BlockSource, start: number, pedantic: boolean): number {
+function setextUnderlineStart(src: string, start: number, pedantic: boolean): number {
   let marker = start;
   while (marker - start < 3 && src.charCodeAt(marker) === 32) marker++;
   const code = src.charCodeAt(marker);
@@ -330,7 +319,7 @@ function setextUnderlineStart(src: BlockSource, start: number, pedantic: boolean
 }
 
 /** @hot */
-function setextTextEnd(src: BlockSource, start: number, gfm: boolean, pedantic: boolean): number {
+function setextTextEnd(src: string, start: number, gfm: boolean, pedantic: boolean): number {
   if (!pedantic && setextInterrupts(src, start, gfm, true)) return -1;
   let end = lineEnd(src, start);
   if (end === start) return -1;
@@ -354,7 +343,7 @@ function setextTextEnd(src: BlockSource, start: number, gfm: boolean, pedantic: 
 }
 
 /** @hot */
-function tableDelimiterEnd(src: BlockSource, start: number): number {
+function tableDelimiterEnd(src: string, start: number): number {
   let pos = start;
   while (pos - start < 3 && src.charCodeAt(pos) === 32) pos++;
   if (src.charCodeAt(pos) === 124) {
@@ -374,7 +363,7 @@ function tableDelimiterEnd(src: BlockSource, start: number): number {
 }
 
 /** @hot */
-function tableHeaderContent(src: BlockSource, start: number, end: number): number {
+function tableHeaderContent(src: string, start: number, end: number): number {
   while (src.charCodeAt(start) === 32) start++;
   if (start === end) return -1;
   for (let i = start + 1; i < end; i++) {
@@ -385,7 +374,7 @@ function tableHeaderContent(src: BlockSource, start: number, end: number): numbe
 }
 
 /** @hot */
-function tableBodyEnd(src: BlockSource, first: number): number {
+function tableBodyEnd(src: string, first: number): number {
   let start = first;
   while (start < src.length) {
     let content = start;
@@ -398,7 +387,8 @@ function tableBodyEnd(src: BlockSource, first: number): number {
       if (marker === 62 || (marker === 35 && headingMarkerEnd(src, content, false) !== content)) break;
       if ((marker === 45 || marker === 42 || marker === 95) && thematicBreakEnd(src, content) >= 0) break;
       if (marker === 60) {
-        if (testHtmlInterrupt(src, start)) break;
+        htmlInterrupt.lastIndex = start;
+        if (htmlInterrupt.test(src)) break;
       }
       if ((marker === 96 || marker === 126) && src.charCodeAt(content + 1) === marker && src.charCodeAt(content + 2) === marker) {
         let tail = fenceMarkerEnd(src, content);
@@ -421,7 +411,7 @@ function tableBodyEnd(src: BlockSource, first: number): number {
 }
 
 /** @hot */
-function definitionLabelEnd(src: BlockSource, start: number, pedantic: boolean): number {
+function definitionLabelEnd(src: string, start: number, pedantic: boolean): number {
   let pos = start;
   let nonSpace = pedantic;
   while (pos < src.length) {
@@ -443,7 +433,7 @@ function definitionLabelEnd(src: BlockSource, start: number, pedantic: boolean):
 }
 
 /** @hot */
-function angleDestinationEnd(src: BlockSource, start: number): number {
+function angleDestinationEnd(src: string, start: number): number {
   for (let pos = start + 1; pos < src.length; pos++) {
     const code = src.charCodeAt(pos);
     if (code === 62) return pos + 1;
@@ -457,7 +447,7 @@ function angleDestinationEnd(src: BlockSource, start: number): number {
 }
 
 /** @hot */
-function definitionTitleEnd(src: BlockSource, start: number): number {
+function definitionTitleEnd(src: string, start: number): number {
   const opener = src.charCodeAt(start);
   if (opener !== 34 && opener !== 39 && opener !== 40) return -1;
   const closer = opener === 40 ? 41 : opener;
@@ -472,13 +462,13 @@ function definitionTitleEnd(src: BlockSource, start: number): number {
 }
 
 /** @hot */
-function definitionLineEnd(src: BlockSource, offset: number): number {
+function definitionLineEnd(src: string, offset: number): number {
   while (src.charCodeAt(offset) === 32) offset++;
   return offset === src.length || src.charCodeAt(offset) === 10 ? offset : -1;
 }
 
 /** @hot */
-function pedanticTitleEnd(src: BlockSource, start: number): number {
+function pedanticTitleEnd(src: string, start: number): number {
   const opener = src.charCodeAt(start);
   if (opener !== 34 && opener !== 40) return -1;
   let end = blockLineEnd(src, start);
@@ -488,7 +478,7 @@ function pedanticTitleEnd(src: BlockSource, start: number): number {
 }
 
 /** @hot */
-function paragraphEnd(src: BlockSource, offset: number, pedantic: boolean, gfm: boolean, inQuote = false): number {
+function paragraphEnd(src: string, offset: number, pedantic: boolean, gfm: boolean, inQuote = false): number {
   let end = blockLineEnd(src, offset);
   while (end < src.length) {
     const start = end + 1;
@@ -514,7 +504,8 @@ function paragraphEnd(src: BlockSource, offset: number, pedantic: boolean, gfm: 
       if (setextTextEnd(src, start, false, false) >= 0) break;
     } else if (atBlockStart) {
       if (marker === 60) {
-        if (testHtmlInterrupt(src, start)) break;
+        htmlInterrupt.lastIndex = start;
+        if (htmlInterrupt.test(src)) break;
       }
       if ((marker === 96 || marker === 126)
         && src.charCodeAt(content + 1) === marker && src.charCodeAt(content + 2) === marker) {
@@ -547,7 +538,7 @@ function paragraphEnd(src: BlockSource, offset: number, pedantic: boolean, gfm: 
 }
 
 /** @hot */
-function quotedBlockEnd(src: BlockSource, offset: number): number {
+function quotedBlockEnd(src: string, offset: number): number {
   let line = offset;
   let marker = quoteMarkerAt(src, line);
   while (marker >= 0) {
@@ -566,7 +557,7 @@ function quotedBlockEnd(src: BlockSource, offset: number): number {
 }
 
 /** @hot */
-function firstListMarkerEnd(src: BlockSource, offset: number): number {
+function firstListMarkerEnd(src: string, offset: number): number {
   let end = offset;
   while (end < offset + 3 && src.charCodeAt(end) === 32) end++;
 
@@ -584,7 +575,7 @@ function firstListMarkerEnd(src: BlockSource, offset: number): number {
 }
 
 /** @hot */
-function listInterruptsParagraph(src: BlockSource, start: number, after: number): boolean {
+function listInterruptsParagraph(src: string, start: number, after: number): boolean {
   if (after <= start) return false;
   let pos = start;
   while (src.charCodeAt(pos) === 32) pos++;
@@ -596,7 +587,7 @@ function listInterruptsParagraph(src: BlockSource, start: number, after: number)
 }
 
 /** @hot */
-function listHasHr(src: BlockSource, start: number, maxIndent: number): boolean {
+function listHasHr(src: string, start: number, maxIndent: number): boolean {
   let marker = start;
   while (marker - start < maxIndent && src.charCodeAt(marker) === 32) marker++;
   const code = src.charCodeAt(marker);
@@ -604,7 +595,7 @@ function listHasHr(src: BlockSource, start: number, maxIndent: number): boolean 
 }
 
 /** @hot */
-function nestedMarkerEnd(src: BlockSource, start: number, multi: boolean): number {
+function nestedMarkerEnd(src: string, start: number, multi: boolean): number {
   let marker = start;
   while (marker - start < 3 && src.charCodeAt(marker) === 32) marker++;
   if (src.charCodeAt(marker) === 62) {
@@ -620,7 +611,7 @@ function nestedMarkerEnd(src: BlockSource, start: number, multi: boolean): numbe
 }
 
 /** @hot */
-function lineHasFence(src: BlockSource, start: number): boolean {
+function lineHasFence(src: string, start: number): boolean {
   const markerAt = start + skipSpacesAt(src, start, 3);
   const marker = src.charCodeAt(markerAt);
   if (marker !== 96 && marker !== 126) return false;
@@ -632,14 +623,14 @@ function lineHasFence(src: BlockSource, start: number): boolean {
 }
 
 /** @hot */
-function skipSpacesAt(src: BlockSource, start: number, maximum: number): number {
+function skipSpacesAt(src: string, start: number, maximum: number): number {
   let end = start;
   while (end - start < maximum && src.charCodeAt(end) === 32) end++;
   return end - start;
 }
 
 /** @hot */
-function listMarkerEnd(src: BlockSource, offset: number, marker: number, ordered: boolean, pedantic: boolean): number {
+function listMarkerEnd(src: string, offset: number, marker: number, ordered: boolean, pedantic: boolean): number {
   let end = offset;
   while (end < offset + 3 && src.charCodeAt(end) === 32) end++;
 
@@ -661,7 +652,7 @@ function listMarkerEnd(src: BlockSource, offset: number, marker: number, ordered
 }
 
 /** @hot */
-function lineEnd(src: BlockSource, start: number): number {
+function lineEnd(src: string, start: number): number {
   const end = src.indexOf('\n', start);
   return end === -1 ? src.length : end;
 }
@@ -694,14 +685,14 @@ function commonMarkTextEnd(src: string, offset: number): number {
 }
 
 /** @hot */
-function isEscapedAt(src: BlockSource, offset: number): boolean {
+function isEscapedAt(src: string, offset: number): boolean {
   let start = offset;
   while (src.charCodeAt(start - 1) === 92) start--;
   return (offset - start) % 2 !== 0;
 }
 
 /** @hot */
-function hasTableDelimiter(src: BlockSource, start = 0, end = src.length): boolean {
+function hasTableDelimiter(src: string, start = 0, end = src.length): boolean {
   for (let i = start; i < end; i++) {
     const code = src.charCodeAt(i);
     if (code === 58 || code === 124) return true;
@@ -710,7 +701,7 @@ function hasTableDelimiter(src: BlockSource, start = 0, end = src.length): boole
 }
 
 /** @hotIgnore Output: one alignment array with one entry per column. */
-function tableAlignments(src: BlockSource, start = 0, end = src.length): Tokens.Table['align'] {
+function tableAlignments(src: string, start = 0, end = src.length): Tokens.Table['align'] {
   const alignment: Tokens.Table['align'] = [];
   let first = src.charCodeAt(start) === 124 ? start + 1 : start;
   while (src.charCodeAt(end - 1) === 32) end--;
@@ -729,14 +720,14 @@ function tableAlignments(src: BlockSource, start = 0, end = src.length): Tokens.
 }
 
 /** @hot */
-function skipSpaces(src: BlockSource, maximum: number): number {
+function skipSpaces(src: string, maximum: number): number {
   let end = 0;
   while (end < maximum && src.charCodeAt(end) === 32) end++;
   return end;
 }
 
 /** @hot */
-function startsListInterrupt(src: BlockSource, maxIndent: number, pedantic: boolean, containers: boolean): boolean {
+function startsListInterrupt(src: string, maxIndent: number, pedantic: boolean, containers: boolean): boolean {
   let pos = skipSpaces(src, maxIndent);
   const marker = src.charCodeAt(pos);
   if (marker === 96 || marker === 126) {
@@ -761,7 +752,7 @@ function startsListInterrupt(src: BlockSource, maxIndent: number, pedantic: bool
 }
 
 /** @hot */
-function startsIndentedCode(src: BlockSource): boolean {
+function startsIndentedCode(src: string): boolean {
   let width = 0;
   for (let i = 0; i < src.length; i++) {
     const code = src.charCodeAt(i);
@@ -773,7 +764,7 @@ function startsIndentedCode(src: BlockSource): boolean {
 }
 
 /** @hot */
-function endsWithBlankLine(src: BlockSource, start: number, end: number): boolean {
+function endsWithBlankLine(src: string, start: number, end: number): boolean {
   while (end > start && (src.charCodeAt(end - 1) === 9 || src.charCodeAt(end - 1) === 32)) end--;
   if (src.charCodeAt(--end) !== 10) return false;
   while (end > start && (src.charCodeAt(end - 1) === 9 || src.charCodeAt(end - 1) === 32)) end--;
@@ -781,7 +772,7 @@ function endsWithBlankLine(src: BlockSource, start: number, end: number): boolea
 }
 
 /** @hot */
-function hasTwoLineFeeds(src: BlockSource): boolean {
+function hasTwoLineFeeds(src: string): boolean {
   let seen = false;
   for (let i = 0; i < src.length; i++) {
     const code = src.charCodeAt(i);
@@ -816,7 +807,7 @@ function rawTagNameMatches(raw: string, start: number): boolean {
 }
 
 /** @hot */
-function listLineText(src: BlockSource, start: number, end: number, column: number): string {
+function listLineText(src: string, start: number, end: number, column: number): string {
   let pos = start;
   let width = column;
   let hasTab = false;
@@ -832,51 +823,17 @@ function listLineText(src: BlockSource, start: number, end: number, column: numb
     }
     pos++;
   }
-  return hasTab ? ' '.repeat(width - column) + blockSourceText(src, pos, end) : blockSourceText(src, start, end);
+  return hasTab ? ' '.repeat(width - column) + sourceText(src, pos, end) : sourceText(src, start, end);
 }
 
 /** @hot */
-function quoteMarkerAt(src: BlockSource, start: number): number {
+function quoteMarkerAt(src: string, start: number): number {
   let marker = start;
   while (marker < start + 3 && src.charCodeAt(marker) === 32) marker++;
   return src.charCodeAt(marker) === 62 ? marker : -1;
 }
 
-function quoteContentView(src: BlockSource, start: number, end: number): BlockLineView | undefined {
-  const view = new BlockLineView(src);
-  for (let line = start; line < end;) {
-    const eol = Math.min(lineEnd(src, line), end);
-    let content = line;
-    const marker = quoteMarkerAt(src, line);
-    let padding = 0;
-    if (marker >= 0) {
-      content = marker + 1;
-      if (src.charCodeAt(content) === 32) content++;
-    } else if (line > start) {
-      let first = line;
-      while (first - line < 3 && src.charCodeAt(first) === 32) first++;
-      const underline = src.charCodeAt(first);
-      if (underline === 45 || underline === 61) {
-        let tail = first + 1;
-        while (tail < eol && src.charCodeAt(tail) === underline) tail++;
-        while (tail < eol && src.charCodeAt(tail) === 32) tail++;
-        if (tail === eol) {
-          padding = 4;
-          content = first;
-        }
-      }
-    }
-    for (let pos = content; pos < eol; pos++) {
-      const code = src.charCodeAt(pos);
-      if (code === 13 || code === 0x2028 || code === 0x2029) return;
-    }
-    view.append(Math.min(content, eol), eol, padding);
-    line = eol + 1;
-  }
-  return view;
-}
-
-function quoteText(src: BlockSource, first: number, end: number): string {
+function quoteText(src: string, first: number, end: number): string {
   let span = first;
   let text = '';
   let start = first;
@@ -884,7 +841,7 @@ function quoteText(src: BlockSource, first: number, end: number): string {
   while (start < end) {
     const marker = quoteMarkerAt(src, start);
     if (marker >= 0) {
-      text += blockSourceText(src, span, start);
+      text += sourceText(src, span, start);
       span = marker + 1;
       const next = src.charCodeAt(span);
       if (next === 32) {
@@ -894,7 +851,7 @@ function quoteText(src: BlockSource, first: number, end: number): string {
         while (whitespaceEnd < end && (src.charCodeAt(whitespaceEnd) === 32 || src.charCodeAt(whitespaceEnd) === 9)) {
           whitespaceEnd++;
         }
-        text += expandTabs(blockSourceText(src, span, whitespaceEnd), span - start).slice(1);
+        text += expandTabs(sourceText(src, span, whitespaceEnd), span - start).slice(1);
         span = whitespaceEnd;
       }
     } else if (followsNewline) {
@@ -906,7 +863,7 @@ function quoteText(src: BlockSource, first: number, end: number): string {
         while (after < end && src.charCodeAt(after) === code) after++;
         while (after < end && (src.charCodeAt(after) === 32 || src.charCodeAt(after) === 9)) after++;
         if (after === end || src.charCodeAt(after) === 10) {
-          text += blockSourceText(src, span, start);
+          text += sourceText(src, span, start);
           text += '    ';
           span = pos;
         }
@@ -919,7 +876,7 @@ function quoteText(src: BlockSource, first: number, end: number): string {
     followsNewline = code === 10;
     start++;
   }
-  return text + blockSourceText(src, span, end);
+  return text + sourceText(src, span, end);
 }
 
 /**
@@ -940,7 +897,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
   /** @internal */
   /** @hot */
-  spaceAt(src: BlockSource, offset: number): Tokens.Space | undefined {
+  spaceAt(src: string, offset: number): Tokens.Space | undefined {
     let end = offset;
     let pos = offset;
     while (pos < src.length) {
@@ -955,7 +912,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
     if (pos === src.length) end = pos;
     if (end !== offset) {
-      return createSpace(blockSourceText(src, offset, end));
+      return createSpace(sourceText(src, offset, end));
     }
   }
 
@@ -965,15 +922,15 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
   /** @internal */
   /** @hot */
-  codeAt(src: BlockSource, offset: number): Tokens.Code | undefined {
+  codeAt(src: string, offset: number): Tokens.Code | undefined {
     if (this.rules.block.code === standardCodeRule && this.rules.other.codeRemoveIndent === standardCodeIndent) {
       const end = codeBlockEnd(src, offset);
       if (end === offset) return;
-      const slice = blockSourceText(src, offset, end);
+      const slice = sourceText(src, offset, end);
       const raw = this.options.pedantic ? slice : trimTrailingBlankLines(slice);
       return createCode(raw, stripCodeIndent(src, offset, offset + raw.length), undefined, true);
     }
-    const cap = execBlockRule(this.rules.block.code, src, offset, this.rules.cursor?.block.code);
+    const cap = execAt(this.rules.block.code, src, offset, this.rules.cursor?.block.code);
     if (cap) {
       const raw = this.options.pedantic
         ? cap[0]
@@ -989,7 +946,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
   /** @internal */
   /** @hot */
-  fencesAt(src: BlockSource, offset: number): Tokens.Code | undefined {
+  fencesAt(src: string, offset: number): Tokens.Code | undefined {
     const rule = this.rules.block.fences;
     if (rule === standardFenceRule) {
       let markerAt = offset;
@@ -1023,14 +980,14 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       }
       let last = line;
       if (last > first && src.charCodeAt(last - 1) === 10) last--;
-      const raw = blockSourceText(src, offset, end);
-      let text = indentCodeCompensation(raw, blockSourceText(src, first, last), this.lexer.state.top && !this.lexer.state.inBlockquote);
+      const raw = sourceText(src, offset, end);
+      let text = indentCodeCompensation(raw, sourceText(src, first, last), this.lexer.state.top && !this.lexer.state.inBlockquote);
       if (line > first && (text.length === 0 || text.charCodeAt(text.length - 1) === 10)) text += '\n';
-      const lang = blockSourceText(src, infoStart, infoEnd);
+      const lang = sourceText(src, infoStart, infoEnd);
       return createCode(raw, text, lang.trim().replace(this.rules.inline.anyPunctuation, '$1'), false);
     }
     if (rule === noFenceRule) return;
-    const cap = execBlockRule(this.rules.block.fences, src, offset, this.rules.cursor?.block.fences);
+    const cap = execAt(this.rules.block.fences, src, offset, this.rules.cursor?.block.fences);
     if (cap) {
       const raw = cap[0];
       let text = indentCodeCompensation(raw, cap[3] || '', this.lexer.state.top && !this.lexer.state.inBlockquote);
@@ -1050,9 +1007,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
   /** @internal */
   /** @hot */
-  headingAt(src: BlockSource, offset: number): Tokens.Heading | undefined {
+  headingAt(src: string, offset: number): Tokens.Heading | undefined {
     const rule = this.rules.block.heading;
-    let heading: BlockSource = src;
+    let heading = src;
     let customRaw: string | undefined;
     let rawEnd: number;
     let content: number;
@@ -1071,7 +1028,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         if (code === 13 || code === 0x2028 || code === 0x2029) return;
       }
     } else {
-      const cap = execBlockRule(rule, src, offset, this.rules.cursor?.block.heading);
+      const cap = execAt(rule, src, offset, this.rules.cursor?.block.heading);
       if (!cap) return;
       heading = cap[2];
       content = 0;
@@ -1087,8 +1044,8 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (hash < end && (this.options.pedantic || hash === start || beforeHash === 32 || beforeHash === 9)) {
       end = trimEndOffset(heading, start, hash);
     }
-    const text = blockSourceText(heading, start, end);
-    const raw = customRaw ?? blockSourceText(src, offset, rawEnd);
+    const text = sourceText(heading, start, end);
+    const raw = customRaw ?? sourceText(src, offset, rawEnd);
     return createHeading(raw, depth, text, this.lexer.inline(text));
   }
 
@@ -1098,12 +1055,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
   /** @internal */
   /** @hot */
-  hrAt(src: BlockSource, offset: number): Tokens.Hr | undefined {
+  hrAt(src: string, offset: number): Tokens.Hr | undefined {
     let end = offset;
     while (end < offset + 3 && src.charCodeAt(end) === 32) end++;
 
     if (this.rules.block.hr !== standardHrRule) {
-      const cap = execBlockRule(this.rules.block.hr, src, offset, this.rules.cursor?.block.hr);
+      const cap = execAt(this.rules.block.hr, src, offset, this.rules.cursor?.block.hr);
       if (cap) return createHr(withoutTrailingNewlines(cap[0]));
       return;
     }
@@ -1112,7 +1069,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (marker !== 45 && marker !== 95 && marker !== 42) return;
 
     end = thematicBreakEnd(src, end);
-    if (end >= 0) return createHr(blockSourceText(src, offset, end));
+    if (end >= 0) return createHr(sourceText(src, offset, end));
   }
 
   /** @hot */
@@ -1121,11 +1078,11 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @internal */
-  blockquoteAt(src: BlockSource, offset: number): Tokens.Blockquote | undefined {
+  blockquoteAt(src: string, offset: number): Tokens.Blockquote | undefined {
     const rule = this.rules.block.blockquote;
     let quoteEnd = rule === standardQuoteRule
       ? quotedBlockEnd(src, offset)
-      : offset + (execBlockRule(rule, src, offset, this.rules.cursor?.block.blockquote)?.[0].length ?? 0);
+      : offset + (execAt(rule, src, offset, this.rules.cursor?.block.blockquote)?.[0].length ?? 0);
     if (quoteEnd > offset) {
       while (src.charCodeAt(quoteEnd - 1) === 10) quoteEnd--;
       let position = offset;
@@ -1150,14 +1107,10 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         }
 
         let currentText: string;
-        let view: BlockLineView | undefined;
         const tab = src.indexOf('\t', position);
         if (tab >= 0 && tab < end && this.lexer.state.top && !this.lexer.state.inBlockquote) {
           const expanded = expandBlockquoteTabs(src, position, end);
           currentText = quoteText(expanded, 0, expanded.length);
-        } else if (!this.options.pedantic && (tab < 0 || tab >= end)) {
-          view = quoteContentView(src, position, end);
-          currentText = view ? blockSourceText(view, 0, view.length) : quoteText(src, position, end);
         } else {
           currentText = quoteText(src, position, end);
         }
@@ -1171,8 +1124,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         const outerInBlockquote = this.lexer.state.inBlockquote;
         this.lexer.state.top = true;
         this.lexer.state.inBlockquote = true;
-        if (view) this.lexer.blockTokens(view, tokens, true);
-        else this.lexer.blockTokens(currentText, tokens, true);
+        this.lexer.blockTokens(currentText, tokens, true);
         this.lexer.state.top = top;
         this.lexer.state.inBlockquote = outerInBlockquote;
 
@@ -1259,7 +1211,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         }
       }
 
-      return createBlockquote(blockSourceText(src, offset, rawEnd), text, tokens);
+      return createBlockquote(sourceText(src, offset, rawEnd), text, tokens);
     }
   }
 
@@ -1269,9 +1221,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @internal */
-  listAt(src: BlockSource, offset: number): Tokens.List | undefined {
+  listAt(src: string, offset: number): Tokens.List | undefined {
     const standardRule = this.rules.block.list === standardListRule;
-    const cap = standardRule ? undefined : execBlockRule(this.rules.block.list, src, offset, this.rules.cursor?.block.list);
+    const cap = standardRule ? undefined : execAt(this.rules.block.list, src, offset, this.rules.cursor?.block.list);
     const markerEnd = standardRule ? firstListMarkerEnd(src, offset) : cap?.[1].length ?? 0;
     if (markerEnd || cap) {
       // Inside a list item, paragraph lines are lexed as text tokens, so a list after one would
@@ -1279,7 +1231,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       if (!this.options.pedantic && this.lexer.state.lastToken?.type === 'text'
         && !(this.rules.other.listInterruptsParagraph === standardListInterrupt
           ? listInterruptsParagraph(src, offset, offset + markerEnd)
-          : execBlockRule(this.rules.other.listInterruptsParagraph, src, offset, this.rules.cursor?.other.listInterruptsParagraph))) {
+          : execAt(this.rules.other.listInterruptsParagraph, src, offset, this.rules.cursor?.other.listInterruptsParagraph))) {
         return;
       }
 
@@ -1304,7 +1256,6 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
       const list: Tokens.List = createList('', isordered, start, false);
 
-      const views: (BlockLineView | undefined)[] = [];
       let previousBlankLine = false;
       // Check if current bullet point can start a new List Item
       while (offset < src.length) {
@@ -1317,7 +1268,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
         if (this.rules.block.hr === standardHrRule
           ? listHasHr(src, offset, 3)
-          : execBlockRule(this.rules.block.hr, src, offset, this.rules.cursor?.block.hr)) {
+          : execAt(this.rules.block.hr, src, offset, this.rules.cursor?.block.hr)) {
           break;
         }
 
@@ -1327,10 +1278,8 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         offset = Math.min(src.length, firstLineEnd + 1);
 
         const pedantic = !!this.options.pedantic;
-        const firstTab = src.indexOf('\t', firstLineStart);
-        let view = !pedantic && (firstTab < 0 || firstTab >= firstLineEnd) ? new BlockLineView(src) : undefined;
         let line = pedantic
-          ? expandTabs(blockSourceText(src, firstLineStart, firstLineEnd), bulletIndent)
+          ? expandTabs(sourceText(src, firstLineStart, firstLineEnd), bulletIndent)
           : listLineText(src, firstLineStart, firstLineEnd, bulletIndent);
         let lineIndent = 0;
         const trimmedStart = trimStartOffset(line, 0, line.length);
@@ -1339,7 +1288,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         let indent = 0;
         if (this.options.pedantic) {
           indent = 2;
-          itemContents = blockSourceText(line, trimmedStart, line.length);
+          itemContents = sourceText(line, trimmedStart, line.length);
         } else if (blankLine) {
           indent = bulletIndent + 1;
         } else {
@@ -1348,8 +1297,6 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           itemContents = line.slice(indent);
           indent += bulletIndent;
         }
-
-        view?.append(firstLineEnd - itemContents.length, firstLineEnd, 0);
 
         if (blankLine) {
           let next = offset;
@@ -1372,8 +1319,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           // Check if following lines should be included in List Item
           while (offset < src.length) {
             const nextEnd = lineEnd(src, offset);
-            const rawLine = blockSourceText(src, offset, nextEnd);
-            if (view && firstTab >= offset && firstTab < nextEnd) view = undefined;
+            const rawLine = sourceText(src, offset, nextEnd);
             // Pedantic parsing checks the line after realigning its indentation.
             const nextLine = pedantic ? rawLine.replace(this.rules.other.listReplaceNesting, '  ') : rawLine;
 
@@ -1390,8 +1336,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
             const nextIsBlank = trimStartOffset(nextLine, 0, nextLine.length) === nextLine.length;
             if (skipSpaces(nextLineWithoutTabs, nextLineWithoutTabs.length) >= indent || nextIsBlank) {
               itemContents += '\n';
-              itemContents += blockSourceText(nextLineWithoutTabs, indent, nextLineWithoutTabs.length);
-              view?.append(Math.min(offset + indent, nextEnd), nextEnd, 0);
+              itemContents += sourceText(nextLineWithoutTabs, indent, nextLineWithoutTabs.length);
               lineIsLazy = false;
             } else {
               // not enough indentation
@@ -1403,18 +1348,18 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               // nested list item or block quote. Look past their markers to the
               // block a lazy line would continue. Tabs are left alone because
               // their width depends on the column they start at.
-              const previous = blockSourceText(line, lineIndent, line.length);
+              const previous = sourceText(line, lineIndent, line.length);
               let lastBlock = previous;
               if (!this.options.pedantic && !itemContents.includes('\n') && !previous.includes('\t')) {
                 let nested = 0;
-                while (!(hrRegex ? hrRegex.test(blockSourceText(lastBlock, nested, lastBlock.length)) : listHasHr(lastBlock, nested, maxIndent))) {
+                while (!(hrRegex ? hrRegex.test(sourceText(lastBlock, nested, lastBlock.length)) : listHasHr(lastBlock, nested, maxIndent))) {
                   const after = this.rules.other.nestedBlockMarker === standardNestedMarkers
                     ? nestedMarkerEnd(lastBlock, nested, false)
-                    : nested + (this.rules.other.nestedBlockMarker.exec(blockSourceText(lastBlock, nested, lastBlock.length))?.[0].length ?? 0);
+                    : nested + (this.rules.other.nestedBlockMarker.exec(sourceText(lastBlock, nested, lastBlock.length))?.[0].length ?? 0);
                   if (after === nested) break;
                   nested = after;
                 }
-                if (nested) lastBlock = blockSourceText(lastBlock, nested, lastBlock.length);
+                if (nested) lastBlock = sourceText(lastBlock, nested, lastBlock.length);
                 if (trimStartOffset(lastBlock, 0, lastBlock.length) === lastBlock.length) { // empty list item or block quote
                   break;
                 }
@@ -1454,7 +1399,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
                   const heading = nested + skipSpacesAt(content, nested, 3);
                   if (lineHasFence(content, nested) || headingMarkerEnd(content, heading, false) !== heading || listHasHr(content, nested, 3)) break;
                 } else {
-                  const suffix = blockSourceText(content, nested, content.length);
+                  const suffix = sourceText(content, nested, content.length);
                   if (this.rules.block.fences.test(suffix) || this.rules.block.heading.test(suffix) || this.rules.block.hr.test(suffix)) break;
                 }
               }
@@ -1470,7 +1415,6 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
                 ? `    ${nextLineWithoutTabs.replace(/^ {0,3}/, '')}`
                 : nextLine;
               itemContents += '\n' + continuation;
-              view?.append(setextContinuation ? offset + skipSpaces(nextLine, 3) : offset, nextEnd, setextContinuation ? 4 : 0);
               lineIsLazy = true;
             }
 
@@ -1484,7 +1428,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         // The loops above appended a '\n' the source may not have had. It could
         // only land on the item that exhausts src, whose raw is trimmed below,
         // and after which nothing reads the blank line flag
-        const raw = blockSourceText(src, itemStart, offset);
+        const raw = sourceText(src, itemStart, offset);
 
         if (!list.loose) {
           // If the previous item ended with a blank line, the list is loose
@@ -1495,7 +1439,6 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           }
         }
 
-        views.push(view);
         list.items.push(createListItem(raw, !!this.options.gfm && this.rules.other.listIsTask.test(itemContents), false, itemContents));
       }
 
@@ -1503,25 +1446,18 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       const lastItem = list.items.at(-1);
       if (!lastItem) return;
       const lastItemStart = offset - lastItem.raw.length;
-      lastItem.raw = blockSourceText(lastItem.raw, 0, trimEndOffset(lastItem.raw, 0, lastItem.raw.length));
-      lastItem.text = blockSourceText(lastItem.text, 0, trimEndOffset(lastItem.text, 0, lastItem.text.length));
-      list.raw = blockSourceText(src, listStart, lastItemStart + lastItem.raw.length);
+      lastItem.raw = sourceText(lastItem.raw, 0, trimEndOffset(lastItem.raw, 0, lastItem.raw.length));
+      lastItem.text = sourceText(lastItem.text, 0, trimEndOffset(lastItem.text, 0, lastItem.text.length));
+      list.raw = sourceText(src, listStart, lastItemStart + lastItem.raw.length);
 
       // Item child tokens handled here at end because we needed to have the final item to trim it first
       // First pass: tokenize items and finalize list.loose from spacers before placing checkboxes
       // Where each item's inline queue entries start, so the checkbox is removed from its own text
       const queueStarts: number[] = [];
-      for (let i = 0; i < list.items.length; i++) {
-        const item = list.items[i];
-        const view = views[i];
+      for (const item of list.items) {
         this.lexer.state.top = false;
         queueStarts.push(this.lexer.inlineQueue.length);
-        if (view) {
-          view.length = item.text.length;
-          this.lexer.blockTokens(view, item.tokens);
-        } else {
-          this.lexer.blockTokens(item.text, item.tokens);
-        }
+        this.lexer.blockTokens(item.text, item.tokens);
 
         if (!list.loose) {
           for (let i = 0; i < item.tokens.length; i++) {
@@ -1596,12 +1532,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
   /** @internal */
   /** @hot */
-  htmlAt(src: BlockSource, offset: number): Tokens.HTML | undefined {
-    const cap = execBlockRule(this.rules.block.html, src, offset, this.rules.cursor?.block.html);
+  htmlAt(src: string, offset: number): Tokens.HTML | undefined {
+    const cap = execAt(this.rules.block.html, src, offset, this.rules.cursor?.block.html);
     if (cap) {
       // an html block of type 7 cannot interrupt a paragraph, so a lazy
       // continuation line that starts one continues the paragraph instead
-      if (this.lexer.state.lastToken?.type === 'paragraph' && !execBlockRule(this.rules.other.htmlBeginRegex(4), src, offset, this.rules.cursor?.other.htmlBegin)) {
+      if (this.lexer.state.lastToken?.type === 'paragraph' && !execAt(this.rules.other.htmlBeginRegex(4), src, offset, this.rules.cursor?.other.htmlBegin)) {
         return;
       }
 
@@ -1616,7 +1552,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @internal */
-  defAt(src: BlockSource, offset: number): Tokens.Def | undefined {
+  defAt(src: string, offset: number): Tokens.Def | undefined {
     const rule = this.rules.block.def;
     if (rule === standardDefRule || rule === pedanticDefRule) {
       const pedantic = rule === pedanticDefRule;
@@ -1659,14 +1595,14 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       const titledEnd = titleEnd < 0 ? -1 : definitionLineEnd(src, titleEnd);
       const end = titledEnd < 0 ? definitionLineEnd(src, destEnd) : titledEnd;
       if (end < 0) return;
-      const href = blockSourceText(src, hrefStart, hrefEnd);
+      const href = sourceText(src, hrefStart, hrefEnd);
       if (href.charCodeAt(0) !== 60 && findClosingParen(href) !== -1) return;
-      const tag = typeof src === 'string' ? normalizeLabel(src, label, labelEnd) : normalizeLabel(blockSourceText(src, label, labelEnd));
+      const tag = normalizeLabel(src, label, labelEnd);
       const url = href.replace(this.rules.other.hrefBrackets, '$1').replace(this.rules.inline.anyPunctuation, '$1');
-      const title = titledEnd < 0 ? undefined : blockSourceText(src, titleStart + 1, titleEnd - 1).replace(this.rules.inline.anyPunctuation, '$1');
-      return createDef(tag, blockSourceText(src, offset, end), url, title!);
+      const title = titledEnd < 0 ? undefined : sourceText(src, titleStart + 1, titleEnd - 1).replace(this.rules.inline.anyPunctuation, '$1');
+      return createDef(tag, sourceText(src, offset, end), url, title!);
     }
-    const cap = execBlockRule(this.rules.block.def, src, offset, this.rules.cursor?.block.def);
+    const cap = execAt(this.rules.block.def, src, offset, this.rules.cursor?.block.def);
     if (cap) {
       // outside angle brackets a link destination holds only balanced parentheses
       if (cap[2].charCodeAt(0) !== 60 && findClosingParen(cap[2]) !== -1) {
@@ -1686,7 +1622,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
   /** @internal */
   /** @hot */
-  tableAt(src: BlockSource, offset: number): Tokens.Table | undefined {
+  tableAt(src: string, offset: number): Tokens.Table | undefined {
     if (this.rules.block.table === noTableRule) return;
     if (this.rules.block.table === standardTableRule && this.rules.other.tableHeader === standardTableHeader) {
       const headerEnd = blockLineEnd(src, offset);
@@ -1701,7 +1637,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       if (headers.length !== aligns.length) return;
       const bodyStart = Math.min(alignEnd + 1, src.length);
       const bodyEnd = tableBodyEnd(src, bodyStart);
-      const raw = withoutTrailingNewlines(blockSourceText(src, offset, bodyEnd));
+      const raw = withoutTrailingNewlines(sourceText(src, offset, bodyEnd));
       const table = createTable(raw, aligns);
       for (let i = 0; i < headers.length; i++) {
         table.header.push(createTableCell(headers[i], this.lexer.inline(headers[i]), true, aligns[i]));
@@ -1726,7 +1662,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     let headers: string[] | undefined;
     let aligns: Tokens.Table['align'] | undefined;
     if (this.options.gfm && !this.options.pedantic) {
-      const header = execBlockRule(this.rules.other.tableHeader, src, offset, this.rules.cursor?.other.tableHeader);
+      const header = execAt(this.rules.other.tableHeader, src, offset, this.rules.cursor?.other.tableHeader);
       if (!header || !hasTableDelimiter(header[2])) {
         return;
       }
@@ -1736,7 +1672,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         return;
       }
     }
-    const cap = execBlockRule(this.rules.block.table, src, offset, this.rules.cursor?.block.table);
+    const cap = execAt(this.rules.block.table, src, offset, this.rules.cursor?.block.table);
     if (!cap) {
       return;
     }
@@ -1787,7 +1723,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
   /** @internal */
   /** @hot */
-  lheadingAt(src: BlockSource, offset: number): Tokens.Heading | undefined {
+  lheadingAt(src: string, offset: number): Tokens.Heading | undefined {
     const rule = this.rules.block.lheading;
     if (rule === standardSetextRule || rule === gfmSetextRule || rule === pedanticSetextRule) {
       const pedantic = rule === pedanticSetextRule;
@@ -1796,14 +1732,14 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       const marker = setextUnderlineStart(src, end + 1, pedantic);
       const depth = src.charCodeAt(marker) === 61 ? 1 : 2;
       const start = trimStartOffset(src, offset, end);
-      const text = blockSourceText(src, start, trimEndOffset(src, start, end));
-      const raw = blockSourceText(src, offset, blockLineEnd(src, marker));
+      const text = sourceText(src, start, trimEndOffset(src, start, end));
+      const raw = sourceText(src, offset, blockLineEnd(src, marker));
       return createHeading(raw, depth, text, this.lexer.inline(text));
     }
-    const cap = execBlockRule(this.rules.block.lheading, src, offset, this.rules.cursor?.block.lheading);
+    const cap = execAt(this.rules.block.lheading, src, offset, this.rules.cursor?.block.lheading);
     if (cap) {
       const start = trimStartOffset(cap[1], 0, cap[1].length);
-      const text = blockSourceText(cap[1], start, trimEndOffset(cap[1], start, cap[1].length));
+      const text = sourceText(cap[1], start, trimEndOffset(cap[1], start, cap[1].length));
       return createHeading(withoutTrailingNewlines(cap[0]), cap[2].charCodeAt(0) === 61 ? 1 : 2, text, this.lexer.inline(text));
     }
   }
@@ -1814,21 +1750,21 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
   /** @internal */
   /** @hot */
-  paragraphAt(src: BlockSource, offset: number): Tokens.Paragraph | undefined {
+  paragraphAt(src: string, offset: number): Tokens.Paragraph | undefined {
     const rule = this.rules.block.paragraph;
     let raw: string;
     let text: string;
     if (rule === commonMarkParagraphRule || rule === gfmParagraphRule || rule === pedanticParagraphRule) {
       const end = paragraphEnd(src, offset, rule === pedanticParagraphRule, rule === gfmParagraphRule);
       if (end === offset) return;
-      raw = text = blockSourceText(src, offset, end);
+      raw = text = sourceText(src, offset, end);
     } else {
-      const cap = execBlockRule(rule, src, offset, this.rules.cursor?.block.paragraph);
+      const cap = execAt(rule, src, offset, this.rules.cursor?.block.paragraph);
       if (!cap) return;
       raw = cap[0];
       text = cap[1];
       if (text.charCodeAt(text.length - 1) === 10) {
-        text = blockSourceText(text, 0, text.length - 1);
+        text = sourceText(text, 0, text.length - 1);
       }
     }
     return createParagraph(raw, text, this.lexer.inline(text));
@@ -1840,14 +1776,14 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
   /** @internal */
   /** @hot */
-  textAt(src: BlockSource, offset: number): Tokens.Text | undefined {
+  textAt(src: string, offset: number): Tokens.Text | undefined {
     if (this.rules.block.text === standardTextRule
       && this.rules.other.textIndentedContinuation === standardTextContinuation
       && this.rules.other.codeRemoveIndent === standardCodeIndent) {
       const line = blockLineEnd(src, offset);
       if (line === offset) return;
       let end = line;
-      let text = blockSourceText(src, offset, line);
+      let text = sourceText(src, offset, line);
       while (end < src.length) {
         const start = end + 1;
         const indent = blockIndentEnd(src, start);
@@ -1855,19 +1791,19 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         const content = blockContentStart(src, indent);
         if (content === src.length || src.charCodeAt(content) === 10) break;
         end = blockLineEnd(src, content);
-        text += '\n' + blockSourceText(src, indent, end);
+        text += '\n' + sourceText(src, indent, end);
       }
-      return createText(end === line ? text : blockSourceText(src, offset, end), text, this.lexer.inline(text));
+      return createText(end === line ? text : sourceText(src, offset, end), text, this.lexer.inline(text));
     }
-    const cap = execBlockRule(this.rules.block.text, src, offset, this.rules.cursor?.block.text);
+    const cap = execAt(this.rules.block.text, src, offset, this.rules.cursor?.block.text);
     if (cap) {
       let raw = cap[0];
       let text = cap[0];
       // Indented code cannot interrupt the text, so indented lines continue it
       // up to the next blank line
-      const continuation = execBlockRule(this.rules.other.textIndentedContinuation, src, offset + raw.length, this.rules.cursor?.other.textIndentedContinuation);
+      const continuation = execAt(this.rules.other.textIndentedContinuation, src, offset + raw.length, this.rules.cursor?.other.textIndentedContinuation);
       if (continuation) {
-        raw = blockSourceText(src, offset, offset + raw.length + continuation[0].length);
+        raw = sourceText(src, offset, offset + raw.length + continuation[0].length);
         text += continuation[0].replace(this.rules.other.codeRemoveIndent, '');
       }
       return createText(raw, text, this.lexer.inline(text));
