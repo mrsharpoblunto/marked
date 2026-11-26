@@ -193,6 +193,11 @@ function isLabelEndInsideToken(src: string, label: string, labelStart: number, r
 }
 
 const standardListRule = block.normal.list;
+const standardCodeRule = block.normal.code;
+const standardFenceRule = block.normal.fences;
+const noFenceRule = block.pedantic.fences;
+const standardHeadingRule = block.normal.heading;
+const pedanticHeadingRule = block.pedantic.heading;
 const standardHrRule = block.normal.hr;
 const standardTextRule = block.normal.text;
 const standardTextContinuation = other.textIndentedContinuation;
@@ -204,6 +209,56 @@ const pedanticParagraphRule = block.pedantic.paragraph;
 const htmlInterrupt = new RegExp(paragraphHtmlStart.source, 'y');
 const setextInterrupt = new RegExp(block.normal.lheading.source.slice(1), 'y');
 const tableInterrupt = new RegExp(other.tableHeader.source.replace(/^\^/, ''), 'y');
+
+/** @hot */
+function headingMarkerEnd(src: string, start: number, pedantic: boolean): number {
+  if (src.charCodeAt(start) !== 35) return start;
+  let end = start + 1;
+  while (end - start < 6 && src.charCodeAt(end) === 35) end++;
+  return pedantic || end === src.length || isStringWhitespace(src.charCodeAt(end)) ? end : start;
+}
+
+/** @hot */
+function fenceMarkerEnd(src: string, start: number): number {
+  const marker = src.charCodeAt(start);
+  let end = start;
+  while (src.charCodeAt(end) === marker) end++;
+  return end;
+}
+
+/** @hot */
+function codeBlockEnd(src: string, offset: number): number {
+  let end = offset;
+  while (end < src.length) {
+    const indent = blockIndentEnd(src, end);
+    if (indent === end || indent === src.length || src.charCodeAt(indent) === 10) break;
+    end = blockLineEnd(src, indent);
+    if (end === src.length) break;
+    end++;
+    while (end < src.length) {
+      const content = blockContentStart(src, end);
+      if (content === src.length) return content;
+      if (src.charCodeAt(content) !== 10) break;
+      end = content + 1;
+    }
+  }
+  return end;
+}
+
+/** @hot */
+function stripCodeIndent(src: string, start: number, end: number): string {
+  let out = '';
+  let copyStart = start;
+  for (let line = start; line < end; line = blockLineEnd(src, line) + 1) {
+    let stripped = line;
+    while (stripped - line < 4 && src.charCodeAt(stripped) === 32) stripped++;
+    if (stripped - line < 4 && src.charCodeAt(stripped) === 9) stripped++;
+    if (stripped === line) continue;
+    out += sourceText(src, copyStart, line);
+    copyStart = stripped;
+  }
+  return out + sourceText(src, copyStart, end);
+}
 
 /** @hot */
 function paragraphEnd(src: string, offset: number, pedantic: boolean, gfm: boolean): number {
@@ -579,6 +634,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   /** @internal */
   /** @hot */
   codeAt(src: string, offset: number): Tokens.Code | undefined {
+    if (this.rules.block.code === standardCodeRule && this.rules.other.codeRemoveIndent === standardCodeIndent) {
+      const end = codeBlockEnd(src, offset);
+      if (end === offset) return;
+      const slice = sourceText(src, offset, end);
+      const raw = this.options.pedantic ? slice : trimTrailingBlankLines(slice);
+      return createCode(raw, stripCodeIndent(src, offset, offset + raw.length), undefined, true);
+    }
     const cap = execAt(this.rules.block.code, src, offset, this.rules.cursor?.block.code);
     if (cap) {
       const raw = this.options.pedantic
@@ -596,6 +658,46 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   /** @internal */
   /** @hot */
   fencesAt(src: string, offset: number): Tokens.Code | undefined {
+    const rule = this.rules.block.fences;
+    if (rule === standardFenceRule) {
+      let markerAt = offset;
+      while (markerAt - offset < 3 && src.charCodeAt(markerAt) === 32) markerAt++;
+      const marker = src.charCodeAt(markerAt);
+      if (marker !== 96 && marker !== 126) return;
+      const infoStart = fenceMarkerEnd(src, markerAt);
+      const length = infoStart - markerAt;
+      if (length < 3) return;
+      const infoEnd = blockLineEnd(src, infoStart);
+      if (marker === 96) {
+        for (let i = infoStart; i < infoEnd; i++) {
+          if (src.charCodeAt(i) === 96) return;
+        }
+      }
+      const first = Math.min(infoEnd + 1, src.length);
+      let line = first;
+      let end = src.length;
+      while (line < src.length) {
+        let start = line;
+        while (start - line < 3 && src.charCodeAt(start) === 32) start++;
+        const close = src.charCodeAt(start) === marker ? fenceMarkerEnd(src, start) : start;
+        if (close - start >= length) {
+          const tail = blockContentStart(src, close);
+          if (tail === src.length || src.charCodeAt(tail) === 10) {
+            end = tail;
+            break;
+          }
+        }
+        line = Math.min(blockLineEnd(src, start) + 1, src.length);
+      }
+      let last = line;
+      if (last > first && src.charCodeAt(last - 1) === 10) last--;
+      const raw = sourceText(src, offset, end);
+      let text = indentCodeCompensation(raw, sourceText(src, first, last), this.lexer.state.top && !this.lexer.state.inBlockquote);
+      if (line > first && (text.length === 0 || text.charCodeAt(text.length - 1) === 10)) text += '\n';
+      const lang = sourceText(src, infoStart, infoEnd);
+      return createCode(raw, text, lang.trim().replace(this.rules.inline.anyPunctuation, '$1'), false);
+    }
+    if (rule === noFenceRule) return;
     const cap = execAt(this.rules.block.fences, src, offset, this.rules.cursor?.block.fences);
     if (cap) {
       const raw = cap[0];
@@ -617,20 +719,45 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   /** @internal */
   /** @hot */
   headingAt(src: string, offset: number): Tokens.Heading | undefined {
-    const cap = execAt(this.rules.block.heading, src, offset, this.rules.cursor?.block.heading);
-    if (cap) {
-      const start = trimStartOffset(cap[2], 0, cap[2].length);
-      let end = trimEndOffset(cap[2], start, cap[2].length);
-      let hash = end;
-      while (hash > start && cap[2].charCodeAt(hash - 1) === 35) hash--;
-      const beforeHash = cap[2].charCodeAt(hash - 1);
-      if (hash < end && (this.options.pedantic || hash === start || beforeHash === 32 || beforeHash === 9)) {
-        end = trimEndOffset(cap[2], start, hash);
+    const rule = this.rules.block.heading;
+    let heading = src;
+    let customRaw: string | undefined;
+    let rawEnd: number;
+    let content: number;
+    let depth: number;
+    if (rule === standardHeadingRule || rule === pedanticHeadingRule) {
+      let marker = offset;
+      if (rule === standardHeadingRule) {
+        while (marker - offset < 3 && src.charCodeAt(marker) === 32) marker++;
       }
-      const text = sourceText(cap[2], start, end);
-
-      return createHeading(withoutTrailingNewlines(cap[0]), cap[1].length, text, this.lexer.inline(text));
+      content = headingMarkerEnd(src, marker, rule === pedanticHeadingRule);
+      if (content === marker) return;
+      depth = content - marker;
+      rawEnd = blockLineEnd(src, content);
+      for (let i = content; i < rawEnd; i++) {
+        const code = src.charCodeAt(i);
+        if (code === 13 || code === 0x2028 || code === 0x2029) return;
+      }
+    } else {
+      const cap = execAt(rule, src, offset, this.rules.cursor?.block.heading);
+      if (!cap) return;
+      heading = cap[2];
+      content = 0;
+      depth = cap[1].length;
+      rawEnd = heading.length;
+      customRaw = withoutTrailingNewlines(cap[0]);
     }
+    const start = trimStartOffset(heading, content, rawEnd);
+    let end = trimEndOffset(heading, start, rawEnd);
+    let hash = end;
+    while (hash > start && heading.charCodeAt(hash - 1) === 35) hash--;
+    const beforeHash = heading.charCodeAt(hash - 1);
+    if (hash < end && (this.options.pedantic || hash === start || beforeHash === 32 || beforeHash === 9)) {
+      end = trimEndOffset(heading, start, hash);
+    }
+    const text = sourceText(heading, start, end);
+    const raw = customRaw ?? sourceText(src, offset, rawEnd);
+    return createHeading(raw, depth, text, this.lexer.inline(text));
   }
 
   hr(src: string): Tokens.Hr | undefined {
