@@ -208,11 +208,23 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   space(src: string): Tokens.Space | undefined {
-    const cap = this.rules.block.newline.exec(src);
-    if (cap && cap[0].length > 0) {
+    let end = 0;
+    let pos = 0;
+    while (pos < src.length) {
+      const code = src.charCodeAt(pos);
+      if (code === 10) {
+        end = ++pos;
+      } else if (code === 32 || code === 9) {
+        pos++;
+      } else {
+        break;
+      }
+    }
+    if (pos === src.length) end = pos;
+    if (end !== 0) {
       return {
         type: 'space',
-        raw: cap[0],
+        raw: end === src.length ? src : src.slice(0, end),
       };
     }
   }
@@ -280,11 +292,26 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   hr(src: string): Tokens.Hr | undefined {
-    const cap = this.rules.block.hr.exec(src);
-    if (cap) {
+    let end = 0;
+    while (end < 3 && src.charCodeAt(end) === 32) end++;
+
+    const marker = src.charCodeAt(end);
+    if (marker !== 45 && marker !== 95 && marker !== 42) return;
+
+    let count = 0;
+    while (end < src.length) {
+      const code = src.charCodeAt(end);
+      if (code === marker) {
+        count++;
+      } else if (code !== 32 && code !== 9) {
+        break;
+      }
+      end++;
+    }
+    if (count >= 3 && (end === src.length || src.charCodeAt(end) === 10)) {
       return {
         type: 'hr',
-        raw: rtrim(cap[0], '\n'),
+        raw: end === src.length ? src : src.slice(0, end),
       };
     }
   }
