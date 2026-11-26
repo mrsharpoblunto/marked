@@ -168,6 +168,9 @@ function isLabelEndInsideToken(src: string, label: string, labelStart: number, r
 }
 
 const standardListRule = block.normal.list;
+const commonMarkParagraphRule = block.normal.paragraph;
+const gfmParagraphRule = block.gfm.paragraph;
+const pedanticParagraphRule = block.pedantic.paragraph;
 
 /** @hot */
 function firstListMarkerEnd(src: string): number {
@@ -947,18 +950,27 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   paragraph(src: string): Tokens.Paragraph | undefined {
-    const cap = this.rules.block.paragraph.exec(src);
-    if (cap) {
-      const text = cap[1].charAt(cap[1].length - 1) === '\n'
-        ? cap[1].slice(0, -1)
-        : cap[1];
-      return {
-        type: 'paragraph',
-        raw: cap[0],
-        text,
-        tokens: this.lexer.inline(text),
-      };
+    const rule = this.rules.block.paragraph;
+    let raw: string;
+    let text: string;
+    if (src.length > 0 && src.indexOf('\n') === -1
+      && (rule === commonMarkParagraphRule || rule === gfmParagraphRule || rule === pedanticParagraphRule)) {
+      raw = text = src;
+    } else {
+      const cap = rule.exec(src);
+      if (!cap) return;
+      raw = cap[0];
+      text = cap[1];
+      if (text.charCodeAt(text.length - 1) === 10) {
+        text = text.slice(0, -1);
+      }
     }
+    return {
+      type: 'paragraph',
+      raw,
+      text,
+      tokens: this.lexer.inline(text),
+    };
   }
 
   text(src: string): Tokens.Text | undefined {
