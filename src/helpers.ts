@@ -416,70 +416,57 @@ export function lastCloser(src: string, delimiter: number): number {
   return delimiter === 42 ? hints.star : delimiter === 95 ? hints.underscore : hints.tilde;
 }
 
-const tabPadding = ['', ' ', '  ', '   ', '    '];
-
 /** @hot */
-export function expandTabs(line: string, indent = 0): string {
-  let start = 0;
-  let tab = line.indexOf('\t');
-  if (tab === -1) return line;
-
-  let col = indent;
-  let expanded = '';
-  while (tab !== -1) {
-    for (let i = start; i < tab; i++) {
-      if (line.codePointAt(i)! > 0xffff) i++;
-      col++;
-    }
-    const added = 4 - (col % 4);
-    expanded += line.slice(start, tab) + tabPadding[added];
-    col += added;
-    start = tab + 1;
-    tab = line.indexOf('\t', start);
+export function tabSegments(src: string, first: number, end: number, column: number, segments: number[]): void {
+  const tab = src.indexOf('\t', first);
+  if (tab < 0 || tab >= end) {
+    segments.push(first, end, 0);
+    return;
   }
-  return expanded + line.slice(start);
+  let span = first;
+  let padding = 0;
+  for (let i = first; i < end; i++) {
+    if (src.charCodeAt(i) === 9) {
+      segments.push(span, i, padding);
+      padding = 4 - (column & 3);
+      column += padding;
+      span = i + 1;
+    } else {
+      if (src.codePointAt(i)! > 0xffff) i++;
+      column++;
+    }
+  }
+  segments.push(span, end, padding);
 }
 
-/**
- * Expands the tabs in block quote markers and the indentation after them to spaces, with tab
- * stops measured from the start of the line. Inside fenced code the indentation is code content,
- * so a tab there stays literal. Lines from the first list item on are returned as is, because
- * the item's columns and the fences inside it are not tracked here.
- */
-export function expandBlockquoteTabs(src: string, first: number, limit: number): string {
+/** @hot */
+export function scanQuoteTabs(src: string, first: number, limit: number, segments: number[],
+  appendQuoteSegments: (src: string, first: number, end: number, segments: number[], followsNewline: boolean) => void): void {
   let fenceMarker = 0;
   let fenceLength = 0;
   let fenceDepth = Infinity;
-  let expanded = '';
-  let start = first;
-  const part: BlockquoteLine = {
-    depth: 0,
-    prefix: '',
-    rest: 0,
-    indentWidth: 0,
-    keptStart: 0,
-    keptPadding: 0,
-    contentIndent: 0,
-  };
-  while (start <= limit) {
+  const part = { depth: 0, firstColumn: 0, rest: 0, indentWidth: 0, keptStart: 0, keptPadding: 0, contentIndent: 0 };
+  for (let start = first; start <= limit;) {
     let end = src.indexOf('\n', start);
     if (end === -1 || end > limit) end = limit;
-    if (start !== first) expanded += '\n';
-    splitBlockquoteLine(src, start, end, fenceDepth, part);
+    if (start !== first) segments.push(start - 1, start, 0);
+    const before = segments.length;
+    scanQuoteIndent(src, start, end, fenceDepth, part, segments);
     if (fenceDepth !== part.depth) fenceMarker = 0;
     const content = quoteContentStart(src, part.rest, end, part.contentIndent);
+    let kept = false;
     if (fenceMarker) {
-      if (src.charCodeAt(content) !== fenceMarker || quoteFenceLength(src, content, end, true) < fenceLength) {
-        expanded += part.prefix;
-        expanded += ' '.repeat(part.keptPadding);
-        expanded += src.slice(part.keptStart, end);
-        start = end + 1;
-        continue;
+      kept = src.charCodeAt(content) !== fenceMarker || quoteFenceLength(src, content, end, true) < fenceLength;
+      if (!kept) {
+        fenceMarker = 0;
+        fenceDepth = Infinity;
       }
-      fenceMarker = 0;
-      fenceDepth = Infinity;
     } else {
-      if (quoteListStarter(src, content, end)) return expanded + src.slice(start, limit);
+      if (quoteListStarter(src, content, end)) {
+        segments.length = before;
+        appendQuoteSegments(src, start, limit, segments, start !== first);
+        return;
+      }
       const openLength = quoteFenceLength(src, content, end, false);
       if (openLength) {
         fenceMarker = src.charCodeAt(content);
@@ -489,12 +476,32 @@ export function expandBlockquoteTabs(src: string, first: number, limit: number):
         fenceDepth = Infinity;
       }
     }
-    expanded += part.prefix;
-    expanded += ' '.repeat(part.indentWidth);
-    expanded += src.slice(part.rest, end);
+    let rest = kept ? part.keptStart : part.rest;
+    let padding = kept ? part.keptPadding : part.indentWidth;
+    if (part.depth === 0) {
+      appendQuoteSegments(src, start, end, segments, start !== first);
+    } else {
+      if (part.depth === 1) {
+        if (padding) padding--;
+        else if (src.charCodeAt(rest) === 32) rest++;
+        else if (src.charCodeAt(rest) === 9) {
+          let column = part.firstColumn;
+          while (rest < end && (src.charCodeAt(rest) === 32 || src.charCodeAt(rest) === 9)) {
+            column += tabWidth(src.charCodeAt(rest++), column);
+          }
+          padding = column - part.firstColumn - 1;
+        }
+      }
+      let tail = rest;
+      while (tail < end) {
+        const code = src.charCodeAt(tail++);
+        if (code === 13 || code === 0x2028 || code === 0x2029) break;
+      }
+      segments.push(rest, tail, padding);
+      if (tail < end) appendQuoteSegments(src, tail, end, segments, false);
+    }
     start = end + 1;
   }
-  return expanded;
 }
 
 /** @hot */
@@ -539,7 +546,7 @@ function quoteListStarter(src: string, start: number, end: number): boolean {
 
 interface BlockquoteLine {
   depth: number;
-  prefix: string;
+  firstColumn: number;
   rest: number;
   indentWidth: number;
   keptStart: number;
@@ -547,12 +554,12 @@ interface BlockquoteLine {
   contentIndent: number;
 }
 
-function splitBlockquoteLine(src: string, start: number, end: number, maxDepth: number, part: BlockquoteLine): void {
+/** @hot */
+function scanQuoteIndent(src: string, start: number, end: number, maxDepth: number, part: BlockquoteLine, segments: number[]): void {
   let i = start;
   let col = 0;
   let depth = 0;
   let contentCol = 0;
-  let prefix = '';
 
   while (depth < maxDepth) {
     let j = i;
@@ -563,7 +570,8 @@ function splitBlockquoteLine(src: string, start: number, end: number, maxDepth: 
       code = src.charCodeAt(++j);
     }
     if (j === end || code !== 62 || markerCol - contentCol > 3) break;
-    prefix += ' '.repeat(markerCol - col) + '>';
+    if (depth === 0) part.firstColumn = markerCol + 1;
+    else segments.push(j, j + 1, Math.max(0, markerCol - col - (depth === 1 ? 1 : 0)));
     depth++;
     i = j + 1;
     col = markerCol + 1;
@@ -572,7 +580,6 @@ function splitBlockquoteLine(src: string, start: number, end: number, maxDepth: 
   }
 
   part.depth = depth;
-  part.prefix = prefix;
   part.keptStart = i;
   part.keptPadding = 0;
   part.indentWidth = 0;

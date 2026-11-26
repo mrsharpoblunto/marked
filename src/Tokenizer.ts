@@ -11,8 +11,8 @@ import {
   withoutTrailingNewlines,
   splitCells,
   findClosingParen,
-  expandTabs,
-  expandBlockquoteTabs,
+  tabSegments,
+  scanQuoteTabs,
   normalizeLabel,
   decodeNumericCharacterReferences,
   trimTrailingBlankLines,
@@ -1023,12 +1023,10 @@ function containerText(src: string, segments: number[]): string {
 }
 
 /** @hot */
-function quoteSegments(src: string, first: number, end: number, segments: number[]): void {
-  segments.length = 0;
+function quoteSegments(src: string, first: number, end: number, segments: number[], followsNewline: boolean): void {
   let span = first;
   let padding = 0;
   let start = first;
-  let followsNewline = false;
   while (start < end) {
     const marker = quoteMarkerAt(src, start);
     if (marker >= 0) {
@@ -1308,15 +1306,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
         const tab = src.indexOf('\t', position);
         const segments = this.quoteBuffer ??= [];
-        let currentText: string;
+        segments.length = 0;
         if (tab >= 0 && tab < end && this.lexer.state.top && !this.lexer.state.inBlockquote) {
-          const expanded = expandBlockquoteTabs(src, position, end);
-          quoteSegments(expanded, 0, expanded.length, segments);
-          currentText = containerText(expanded, segments);
+          scanQuoteTabs(src, position, end, segments, quoteSegments);
         } else {
-          quoteSegments(src, position, end, segments);
-          currentText = containerText(src, segments);
+          quoteSegments(src, position, end, segments, false);
         }
+        const currentText = containerText(src, segments);
         position = end + 1;
         rawEnd = end;
         text = text ? `${text}\n${currentText}` : currentText;
@@ -1506,7 +1502,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         offset = Math.min(src.length, firstLineEnd + 1);
 
         const pedantic = !!this.options.pedantic;
-        let line = pedantic ? expandTabs(sourceText(src, firstLineStart, firstLineEnd), bulletIndent) : undefined;
+        let line: string | undefined;
+        if (pedantic) {
+          tabSegments(src, firstLineStart, firstLineEnd, bulletIndent, segments);
+          line = containerText(src, segments);
+          segments.length = 0;
+        }
         let previousStart = firstLineStart;
         let previousEnd = firstLineEnd;
         let previousColumn = bulletIndent;
