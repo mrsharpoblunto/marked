@@ -23,14 +23,10 @@ import {
   trimEndOffset,
   isStringWhitespace,
   lastCloser,
-  inlineRunAt,
-  effectiveInlineStart,
-  delimiterBefore,
-  maskDelimiterClass,
 } from './helpers.ts';
 import { _tag, block, inline, other, paragraphHtmlStart, type Rules } from './rules.ts';
-import type { InlineRuns } from './helpers.ts';
-import { delimiterOpener, inlineMaskCode } from './InlineMask.ts';
+import { delimiterBefore, delimiterOpener, effectiveInlineStart, inlineMaskCode, inlineRunAt, maskDelimiterClass } from './InlineMask.ts';
+import type { InlineRuns } from './InlineMask.ts';
 import type { _Lexer } from './Lexer.ts';
 import type { Links, Tokens, Token } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
@@ -39,6 +35,15 @@ import type { MarkedOptions } from './MarkedOptions.ts';
 function userCloserWindow(rule: RegExp, src: string, offset: number): string {
   rule.lastIndex = 0;
   return src.slice(offset);
+}
+
+/** @hotIgnore User adapter: one regex result per match in the remaining masked suffix. */
+function userCloserMatch(rule: RegExp, suffix: string, limit: number): RegExpExecArray | null {
+  let match: RegExpExecArray | null;
+  while ((match = rule.exec(suffix)) && match.index <= limit) {
+    if (match[1] || match[2] || match[3] || match[4] || match[5] || match[6]) return match;
+  }
+  return null;
 }
 
 /** @hot */
@@ -61,6 +66,7 @@ function orphanDelimiterEnd(runs: InlineRuns, start: number, end: number, delimi
   return start;
 }
 
+/** @hot */
 function delimiterCloserType(before: number, after: number, delimiter: number, pedantic: boolean): number {
   if (after === 0) return before ? 2 : 0;
   if (before === 0) return 1;
@@ -73,8 +79,11 @@ function delimiterCloserType(before: number, after: number, delimiter: number, p
 function punctuationBeforeDelimiter(src: string, offset: number, width: number, rules: Rules): boolean {
   if (offset < 0 || offset >= src.length) return false;
   const code = src.charCodeAt(offset);
+  if (code === 42 || code === 95) return width === 1;
+  if (rules.cursor && rules.cursor.inline.punctuation.original !== rules.inline.punctuation) {
+    return testCharacterAt(rules.inline.punctuation, src, offset, width, rules.cursor.inline.punctuation);
+  }
   if (code <= 127) {
-    if (code === 42 || code === 95) return width === 1;
     return (code >= 9 && code <= 13) || (code >= 32 && code <= 47) || (code >= 58 && code <= 64)
       || (code >= 91 && code <= 96) || (code >= 123 && code <= 126);
   }
@@ -2568,10 +2577,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         let type: number;
         let closerStart: number;
         if (endReg) {
-          match = endReg.exec(window);
-          if (!match || match.index > lastCloser) break;
+          match = userCloserMatch(endReg, window, lastCloser);
+          if (!match) break;
           rDelim = match[1] || match[2] || match[3] || match[4] || match[5] || match[6];
-          if (!rDelim) continue;
           rLength = rDelim.length;
           closerStart = scanStart + match.index + (match[0].codePointAt(0)! > 0xffff ? 2 : 1);
           type = match[3] || match[4] ? 1 : match[5] || match[6] ? 3 : 2;
@@ -2715,10 +2723,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         let type: number;
         let closerStart: number;
         if (endReg) {
-          match = endReg.exec(window);
-          if (!match || match.index > lastCloser) break;
+          match = userCloserMatch(endReg, window, lastCloser);
+          if (!match) break;
           rDelim = match[1] || match[2] || match[3] || match[4] || match[5] || match[6];
-          if (!rDelim) continue;
           rLength = rDelim.length;
           closerStart = scanStart + match.index + (match[0].codePointAt(0)! > 0xffff ? 2 : 1);
           type = match[3] || match[4] ? 1 : 2;

@@ -1,5 +1,4 @@
 import type { _Hooks } from './Hooks.ts';
-import type { _Lexer } from './Lexer.ts';
 
 type HookSlots<P, R> = Pick<_Hooks<P, R>, 'preprocess' | 'postprocess' | 'processAllTokens' | 'provideLexer' | 'provideParser' | 'emStrongMask'>;
 
@@ -27,9 +26,4 @@ export function configureHooks<P, R>(hooks: _Hooks<P, R>): void {
 
 export function hookSlots<P, R>(hooks: _Hooks<P, R>): HookSlots<P, R> {
   return configuredHooks.get(hooks) as HookSlots<P, R> | undefined ?? createHookSlots(hooks);
-}
-
-/** @hotIgnore User adapter: one lexer context per mask hook call. */
-export function callMaskHook<P, R>(mask: (src: string) => string, lexer: _Lexer<P, R>, src: string): string {
-  return mask.call({ lexer }, src) ?? src;
 }

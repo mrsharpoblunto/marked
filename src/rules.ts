@@ -33,14 +33,12 @@ function edit(regex: string | RegExp, opt = '') {
 }
 
 // use a default variable to ensure the regex is evaluated on client an not removed by minifiers
-const supportsLookbehind = ((a = '') => {
-try {
-  return !!new RegExp('(?<=1)(?<!1)' + a);
-} catch {
-  // See browser support here:
-  // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Regular_expressions/Lookbehind_assertion
-  return false;
-}
+export const supportsLookbehind = ((a = '') => {
+  try {
+    return !!new RegExp('(?<=1)(?<!1)' + a);
+  } catch {
+    return false;
+  }
 })();
 
 const gfmTableHeader = '^ *([^\\n ].*)\\n' // Header

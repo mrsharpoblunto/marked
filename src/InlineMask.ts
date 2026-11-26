@@ -1,53 +1,70 @@
 import { execAt, isStringWhitespace, normalizeLabel, sourceText } from './helpers.ts';
-import type { Rules } from './rules.ts';
+import { supportsLookbehind, type Rules } from './rules.ts';
 import type { Links } from './Tokens.ts';
 
 export interface InlineMask {
   codes: Uint16Array;
   rawCodes: Uint16Array;
+  parent: InlineMask | undefined;
+  segments: number[];
   nextParen: Int32Array;
   openerEnds: Int32Array;
   nextEvent: Int32Array;
   spans: number[];
   window: MaskWindow | undefined;
   length: number;
-  changed: boolean;
+  lastEdit: number;
 }
 
 /** @hot */
-export function copyInlineCodes(mask: InlineMask, source: string): void {
-  if (mask.codes.length < source.length) growInlineCodes(mask, source.length);
+export function copyInlineCodes(runs: InlineRuns, source: string): void {
+  const mask = runs.mask;
+  runs.length = 0;
+  if (mask.openerEnds.length < source.length) growInlineIndexes(mask, source.length);
+  if (mask.codes.length < source.length) {
+    mask.codes = new Uint16Array(mask.openerEnds.length);
+    mask.rawCodes = new Uint16Array(mask.openerEnds.length);
+  }
   mask.length = source.length;
-  mask.changed = false;
+  mask.lastEdit = 0;
   const codes = mask.codes;
   const raw = mask.rawCodes;
   const nextParen = mask.nextParen;
   const ends = mask.openerEnds;
   const nextEvent = mask.nextEvent;
   mask.spans.length = 0;
-  mask.window = undefined;
-  let event = source.length;
-  let paren = source.length;
-  let runEnd = source.length;
-  let next = -1;
-  for (let i = source.length - 1; i >= 0; i--) {
+  mask.window = mask.parent = undefined;
+  let eventStart = 0;
+  let parenStart = 0;
+  for (let i = 0; i < source.length;) {
     const code = source.charCodeAt(i);
-    codes[i] = raw[i] = code;
-    if (code === 41) paren = i;
-    nextParen[i] = paren;
-    if (eventCode[code]) event = i;
-    nextEvent[i] = event;
-    if (code !== next) runEnd = i + 1;
-    if (code === 42 || code === 95 || code === 126) ends[i] = runEnd;
-    next = code;
+    if (code === 42 || code === 95 || code === 126) {
+      const start = i++;
+      while (source.charCodeAt(i) === code) i++;
+      codes.fill(code, start, i);
+      raw.fill(code, start, i);
+      ends.fill(i, start, i);
+      addInlineRun(runs, start, i, code);
+    } else {
+      codes[i] = raw[i] = code;
+      if (eventCode[code]) {
+        nextEvent.fill(i, eventStart, i + 1);
+        eventStart = i + 1;
+        if (code === 41) {
+          nextParen.fill(i, parenStart, i + 1);
+          parenStart = i + 1;
+        }
+      }
+      i++;
+    }
   }
+  nextEvent.fill(source.length, eventStart, source.length);
+  nextParen.fill(source.length, parenStart, source.length);
 }
 
 /** @hot */
-function growInlineCodes(mask: InlineMask, size: number): void {
-  const length = Math.max(size, 64, mask.codes.length * 2);
-  mask.codes = new Uint16Array(length);
-  mask.rawCodes = new Uint16Array(length);
+function growInlineIndexes(mask: InlineMask, size: number): void {
+  const length = Math.max(size, 64, mask.openerEnds.length * 2);
   mask.nextParen = new Int32Array(length);
   mask.openerEnds = new Int32Array(length);
   mask.nextEvent = new Int32Array(length);
@@ -56,11 +73,13 @@ function growInlineCodes(mask: InlineMask, size: number): void {
 /** @hot */
 export function projectInlineLabel(mask: InlineMask, root: InlineMask, start: number, end: number, removed: number[]): void {
   const length = end - start - removed.length;
-  if (mask.codes.length < length) growInlineCodes(mask, length);
+  if (mask.openerEnds.length < length) growInlineIndexes(mask, length);
   mask.length = length;
-  mask.changed = false;
+  mask.lastEdit = 0;
   mask.spans.length = 0;
-  mask.window = undefined;
+  mask.parent = root;
+  const segments = mask.segments;
+  segments.length = 0;
   let from = start;
   let dest = 0;
   let lastEvent = 0;
@@ -68,7 +87,7 @@ export function projectInlineLabel(mask: InlineMask, root: InlineMask, start: nu
   for (let i = 0; i <= removed.length; i++) {
     const to = i === removed.length ? end : start + removed[i];
     const size = to - from;
-    mask.rawCodes.set(root.rawCodes.subarray(from, to), dest);
+    if (size) segments.push(dest, from);
     for (let j = from; j < to;) {
       const event = root.nextEvent[j];
       if (event >= to) break;
@@ -90,7 +109,6 @@ export function projectInlineLabel(mask: InlineMask, root: InlineMask, start: nu
   }
   mask.nextEvent.fill(length, lastEvent, length);
   mask.nextParen.fill(length, lastParen, length);
-  mask.codes.set(mask.rawCodes.subarray(0, length));
 }
 
 const Event = {
@@ -159,7 +177,23 @@ export function inlineMaskCode(mask: InlineMask, pos: number): number {
     if (code >= 0) return code;
     end = start;
   }
-  return mask.rawCodes[pos];
+  return unmaskedCode(mask, pos);
+}
+
+/** @hot */
+function unmaskedCode(mask: InlineMask, pos: number): number {
+  const parent = mask.parent;
+  if (!parent || pos < 0 || pos >= mask.length) return mask.rawCodes[pos];
+  const segments = mask.segments;
+  let first = 0;
+  let end = segments.length / 2;
+  while (first + 1 < end) {
+    const middle = (first + end) >> 1;
+    if (segments[middle * 2] > pos) end = middle;
+    else first = middle;
+  }
+  const index = first * 2;
+  return unmaskedCode(parent, segments[index + 1] + pos - segments[index]);
 }
 
 /** @hot */
@@ -181,7 +215,7 @@ function writeMask(mask: InlineMask, start: number, end: number, code: number): 
   } else {
     mask.codes.fill(code, start, end);
   }
-  mask.changed = true;
+  mask.lastEdit = Math.max(mask.lastEdit, end);
 }
 
 /** @hot */
@@ -352,13 +386,14 @@ function hasTextLink(mask: InlineMask, source: string, start: number, end: numbe
   for (let pos = start; pos < end;) {
     const i = nextEvent(mask, pos, end, Event.OpenBracket | Event.Tick | Event.OpenAngle);
     if (i === end) break;
+    const searchStart = pos;
     pos = i + 1;
     const code = inlineMaskCode(mask, i);
     let after = -1;
     if (code === 91) {
       after = blockLinkEnd(mask, i, end);
       if (after >= 0 && (i === start || inlineMaskCode(mask, i - 1) !== 33) && rules.inline.link.test(sourceText(source, i, after))) return true;
-    } else if (code === 96 && (i === start || inlineMaskCode(mask, i - 1) !== 96)) {
+    } else if (code === 96 && (i === start || ((supportsLookbehind || i > searchStart) && inlineMaskCode(mask, i - 1) !== 96))) {
       after = blockCodeEnd(mask, i, end);
     } else if (code === 60) {
       after = blockAngleEnd(mask, i, end);
@@ -471,7 +506,7 @@ export function maskEscapes(mask: InlineMask, source: string, start: number, end
   }
 }
 
-/** @hotIgnore Output: one string of at most end minus start UTF-16 units for the HTML rule. */
+/** @hotIgnore Output: one string of at most end minus start UTF-16 units for an HTML range or user mask. */
 export function inlineMaskText(mask: InlineMask, start: number, end: number): string {
   const codes = mask.codes;
   let text = '';
@@ -486,12 +521,13 @@ export function inlineMaskText(mask: InlineMask, start: number, end: number): st
 }
 
 /** @hot */
-function htmlMaskEnd(mask: InlineMask, source: string, start: number, left: number, end: number, rules: Rules, edited: boolean): number {
+function htmlMaskEnd(mask: InlineMask, source: string, start: number, end: number, rules: Rules, lastEdit: number): number {
   const { tag, autolink } = rules.inline;
   const cursor = rules.cursor?.inline;
-  if (!edited && left === 0 && end === source.length) {
+  if (start >= lastEdit) {
     const match = execAt(tag, source, start, cursor?.tag) || execAt(autolink, source, start, cursor?.autolink);
-    return match ? start + match[0].length : -1;
+    if (!match) return -1;
+    if (start + match[0].length <= end) return start + match[0].length;
   }
   while (inlineMaskCode(mask, end - 1) !== 62) end--;
   const text = inlineMaskText(mask, start, end);
@@ -501,16 +537,17 @@ function htmlMaskEnd(mask: InlineMask, source: string, start: number, left: numb
 
 /** @hot */
 export function maskBlocks(mask: InlineMask, source: string, left: number, end: number, rules: Rules): void {
-  const edited = mask.changed;
+  const lastEdit = mask.lastEdit;
   for (let pos = left; pos < end;) {
     const i = nextEvent(mask, pos, end, Event.OpenBracket | Event.Tick | Event.OpenAngle);
     if (i === end) break;
+    const searchStart = pos;
     pos = i + 1;
     const code = inlineMaskCode(mask, i);
     let after = -1;
     if (code === 91) after = blockLinkEnd(mask, i, end);
-    else if (code === 96 && (i === left || inlineMaskCode(mask, i - 1) !== 96)) after = blockCodeEnd(mask, i, end);
-    else if (code === 60 && blockAngleEnd(mask, i, end) >= 0) after = htmlMaskEnd(mask, source, i, left, end, rules, edited);
+    else if (code === 96 && (i === left || ((supportsLookbehind || i > searchStart) && inlineMaskCode(mask, i - 1) !== 96))) after = blockCodeEnd(mask, i, end);
+    else if (code === 60 && blockAngleEnd(mask, i, end) >= 0) after = htmlMaskEnd(mask, source, i, end, rules, lastEdit);
     if (after < 0) continue;
     mask.spans.push(i, after);
     writeMask(mask, i, after, MaskCode.Brackets);
@@ -518,6 +555,8 @@ export function maskBlocks(mask: InlineMask, source: string, left: number, end: 
   }
 }
 
+// A stage can consume a span without changing its codes. A child boundary
+// inside that span can expose candidates that the parent had to skip.
 /** @hot */
 export function crossesMaskBoundary(mask: InlineMask, start: number, end: number): boolean {
   const spans = mask.spans;
@@ -527,4 +566,141 @@ export function crossesMaskBoundary(mask: InlineMask, start: number, end: number
     if ((from < start && to > start) || (from < end && to > end)) return true;
   }
   return false;
+}
+
+const unicodeDelimiterPunctuation = /[\p{P}\p{S}]/uy;
+
+/** @hot */
+function delimiterClass(src: string, offset: number, tildeIsWord: boolean): number {
+  if (offset < 0 || offset >= src.length) return 0;
+  const code = src.charCodeAt(offset);
+  if (code <= 127) {
+    if (code === 32 || (code >= 9 && code <= 13)) return 0;
+    if (tildeIsWord && code === 126) return 2;
+    return (code >= 33 && code <= 47) || (code >= 58 && code <= 64)
+      || (code >= 91 && code <= 96) || (code >= 123 && code <= 126)
+      ? 1
+      : 2;
+  }
+  if (isStringWhitespace(code)) return 0;
+  unicodeDelimiterPunctuation.lastIndex = offset;
+  return unicodeDelimiterPunctuation.test(src) ? 1 : 2;
+}
+
+export interface InlineRuns {
+  entries: Int32Array;
+  length: number;
+  gfm: boolean;
+  mask: InlineMask;
+}
+
+/** @hot */
+export function inlineRunAt(runs: InlineRuns, offset: number): number {
+  let first = 0;
+  let end = runs.length / 5;
+  while (first < end) {
+    const middle = (first + end) >> 1;
+    if (runs.entries[middle * 5] < offset) first = middle + 1;
+    else end = middle;
+  }
+  return first * 5;
+}
+
+/** @hot */
+function addInlineRun(runs: InlineRuns, start: number, end: number, code: number): void {
+  const index = runs.length;
+  if (index + 5 > runs.entries.length) {
+    const expanded = new Int32Array(Math.max(48, runs.entries.length * 2));
+    expanded.set(runs.entries);
+    runs.entries = expanded;
+  }
+  const entries = runs.entries;
+  entries[index] = start;
+  entries[index + 1] = end;
+  entries[index + 2] = code;
+  runs.length += 5;
+}
+
+/** @hot */
+export function effectiveInlineStart(runs: InlineRuns, index: number, limit: number): number {
+  const entries = runs.entries;
+  const start = entries[index];
+  const code = entries[index + 2];
+  if (inlineMaskCode(runs.mask, start) === code) return start;
+  return start + 1 < Math.min(limit, entries[index + 1]) && inlineMaskCode(runs.mask, start + 1) === code ? start + 1 : -1;
+}
+
+/** @hot */
+export function maskDelimiterClass(runs: InlineRuns, source: string, pos: number, tildeIsWord: boolean): number {
+  if (pos < 0 || pos >= source.length) return 0;
+  const code = inlineMaskCode(runs.mask, pos);
+  if (code === source.charCodeAt(pos)) return delimiterClass(source, pos, tildeIsWord);
+  return code === 97 ? 2 : 1;
+}
+
+/** @hot */
+export function inlineWindowHints(runs: InlineRuns, start: number, end: number, hints: CloserHints): void {
+  let star = -1;
+  let underscore = -1;
+  let tilde = -1;
+  const entries = runs.entries;
+  for (let i = inlineRunAt(runs, end) - 5; i >= 0 && entries[i + 1] > start; i -= 5) {
+    const pos = effectiveInlineStart(runs, i, end);
+    if (pos <= start) continue;
+    const prev = inlineMaskCode(runs.mask, pos - 1);
+    if (prev === 32 || prev === 9 || prev === 10 || prev === 13 || prev === 12) continue;
+    const code = entries[i + 2];
+    if (code === 42 && star < 0) star = pos;
+    else if (code === 95 && underscore < 0) underscore = pos;
+    else if (code === 126 && tilde < 0) tilde = pos;
+    if (star >= 0 && underscore >= 0 && tilde >= 0) break;
+  }
+  hints.star = star;
+  hints.underscore = underscore;
+  hints.tilde = tilde;
+}
+
+/** @hot */
+export function delimiterBefore(mask: InlineMask, pos: number): number {
+  const last = inlineMaskCode(mask, pos - 1);
+  if (last >= 0xdc00 && last <= 0xdfff) {
+    const high = inlineMaskCode(mask, pos - 2);
+    if (high >= 0xd800 && high <= 0xdbff) return pos - 2;
+  }
+  return pos - 1;
+}
+
+/** @hot */
+export function classifyInlineRuns(runs: InlineRuns, source: string): void {
+  const entries = runs.entries;
+  for (let i = 0; i < runs.length; i += 5) {
+    const start = effectiveInlineStart(runs, i, source.length);
+    if (start < 0) continue;
+    const tildeIsWord = entries[i + 2] === 42 && runs.gfm;
+    const before = delimiterBefore(runs.mask, start);
+    entries[i + 3] = (maskDelimiterClass(runs, source, before, tildeIsWord) << 1) | (start - before - 1);
+    entries[i + 4] = maskDelimiterClass(runs, source, entries[i + 1], tildeIsWord);
+  }
+}
+
+export interface CloserHints {
+  star: number;
+  underscore: number;
+  tilde: number;
+}
+
+/** @hot */
+export function projectInlineRuns(runs: InlineRuns, root: InlineRuns, start: number, end: number, removed: number[]): void {
+  runs.length = 0;
+  runs.gfm = root.gfm;
+  let removedBefore = 0;
+  for (let i = inlineRunAt(root, start); i < root.length && root.entries[i] < end; i += 5) {
+    const from = root.entries[i] - start;
+    const to = Math.min(root.entries[i + 1], end) - start;
+    while (removedBefore < removed.length && removed[removedBefore] < from) removedBefore++;
+    const first = from - removedBefore;
+    const last = to - removedBefore;
+    runs.mask.openerEnds.fill(last, first, last);
+    addInlineRun(runs, first, last, root.entries[i + 2]);
+  }
 }

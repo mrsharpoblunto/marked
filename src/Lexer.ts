@@ -3,18 +3,16 @@ import { createText } from './tokenFactories.ts';
 import { _Tokenizer } from './Tokenizer.ts';
 import { _defaults } from './defaults.ts';
 import { other, block, inline, type Rules } from './rules.ts';
-import { callMaskHook, hookSlots } from './HookDispatch.ts';
-import { classifyInlineRuns, execAt, normalizeLabel, preparedLexerRules, inlineWindowHints, projectInlineRuns, scanCloserHints, scanInlineRuns, sourceText } from './helpers.ts';
-import type { InlineRuns } from './helpers.ts';
-import { advanceMaskStage, copyInlineCodes, crossesMaskBoundary, inlineMaskText, maskBlocks, maskEscapes, maskReferences, projectInlineLabel } from './InlineMask.ts';
-import type { InlineMask, MaskWindow } from './InlineMask.ts';
+import { hookSlots } from './HookDispatch.ts';
+import { execAt, normalizeLabel, preparedLexerRules, scanCloserHints, sourceText } from './helpers.ts';
+import { advanceMaskStage, classifyInlineRuns, copyInlineCodes, inlineWindowHints, projectInlineRuns, crossesMaskBoundary, inlineMaskText, maskBlocks, maskEscapes, maskReferences, projectInlineLabel } from './InlineMask.ts';
+import type { InlineMask, InlineRuns, MaskWindow } from './InlineMask.ts';
 import type { Token, TokensList, Tokens } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
 
 const standardReferenceMask = inline.normal.reflinkSearch;
 const standardEscapeMask = inline.normal.anyPunctuationOutsideCode;
 const standardBlockMask = inline.normal.blockSkip;
-const standardNoDelCloser = inline.normal.delRDelim;
 
 const tokenizerFlags = {
   space: 1 << 0,
@@ -225,13 +223,16 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       }
     }
     this.#userMaskRules = rules.inline.reflinkSearch !== standardReferenceMask
-      || rules.inline.anyPunctuationOutsideCode !== standardEscapeMask || rules.inline.blockSkip !== standardBlockMask;
+      || rules.inline.anyPunctuationOutsideCode !== standardEscapeMask || rules.inline.blockSkip !== standardBlockMask
+      || rules.cursor!.inline.tag.original !== rules.inline.tag || rules.cursor!.inline.autolink.original !== rules.inline.autolink
+      || rules.cursor!.inline.link.original !== rules.inline.link;
     this.#userDelimiters = !!this.#maskHook || !!(this.#replaced & (tokenizerFlags.emStrong | tokenizerFlags.del))
       || rules.cursor!.inline.emStrongLDelim.original !== rules.inline.emStrongLDelim
       || rules.cursor!.inline.delLDelim.original !== rules.inline.delLDelim
-      || rules.cursor!.inline.star.original !== rules.inline.emStrongRDelimAst
-      || rules.cursor!.inline.underscore.original !== rules.inline.emStrongRDelimUnd
-      || (rules.inline.delRDelim !== standardNoDelCloser && rules.cursor!.inline.tilde?.original !== rules.inline.delRDelim);
+      || rules.cursor!.inline.star !== rules.inline.emStrongRDelimAst
+      || rules.cursor!.inline.underscore !== rules.inline.emStrongRDelimUnd
+      || rules.cursor!.inline.tilde !== rules.inline.delRDelim
+      || rules.cursor!.inline.punctuation.original !== rules.inline.punctuation;
     this.tokenizer.rules = rules;
   }
 
@@ -676,17 +677,12 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
 
   /** @hot */
   #inlineClippedMask(text: string, runs: InlineRuns, start: number, end: number): Token[] {
-    const depth = this.#windowDepth++;
-    const window = this.#maskWindows[depth] ??= { edits: [], spans: [], starts: [0, 0, 0], stage: 0 };
+    const depth = this.#windowDepth;
     const mask = runs.mask;
     const parentWindow = mask.window;
     const parentSpans = mask.spans;
-    const changed = mask.changed;
-    window.edits.length = window.spans.length = 0;
-    window.stage = 0;
-    mask.window = window;
-    mask.spans = window.spans;
-    mask.changed = false;
+    const lastEdit = mask.lastEdit;
+    this.#beginMaskWindow(mask);
     try {
       this.#fillInlineMask(mask, this.#inlineRoot, start, end);
       inlineWindowHints(runs, start, end, this.#closers);
@@ -694,9 +690,20 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     } finally {
       mask.window = parentWindow;
       mask.spans = parentSpans;
-      mask.changed = changed;
+      mask.lastEdit = lastEdit;
       this.#windowDepth = depth;
     }
+  }
+
+  /** @hot */
+  #beginMaskWindow(mask: InlineMask): void {
+    const depth = this.#windowDepth++;
+    const window = this.#maskWindows[depth] ??= { edits: [], spans: [], starts: [0, 0, 0], stage: 0 };
+    window.edits.length = window.spans.length = 0;
+    window.stage = 0;
+    mask.window = window;
+    mask.spans = window.spans;
+    mask.lastEdit = 0;
   }
 
   /** @hot */
@@ -713,13 +720,15 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     const end = first + length;
     projectInlineLabel(runs.mask, parent.mask, first, end, removed);
     projectInlineRuns(runs, parent, first, end, removed);
+    const windowDepth = this.#windowDepth;
+    const spans = runs.mask.spans;
+    this.#beginMaskWindow(runs.mask);
     this.#inlineRoot = this.#inlineSource = text;
     this.#inlineStart = 0;
     this.#inlineRuns = runs;
     this.state.linkParenPossible = text.length > 0 && runs.mask.nextParen[0] < text.length;
     try {
       this.#fillInlineMask(runs.mask, text, 0, text.length);
-      classifyInlineRuns(runs, text);
       inlineWindowHints(runs, 0, text.length, hints);
       return this.#tokenizeInlines(text, text, [], runs);
     } finally {
@@ -729,6 +738,9 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       this.#inlineStart = start;
       this.#inlineRuns = parent;
       this.#runDepth = depth;
+      this.#windowDepth = windowDepth;
+      runs.mask.window = runs.mask.parent = undefined;
+      runs.mask.spans = spans;
       hints.star = star;
       hints.underscore = underscore;
       hints.tilde = tilde;
@@ -744,13 +756,15 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       mask: {
         codes: new Uint16Array(0),
         rawCodes: new Uint16Array(0),
+        parent: undefined,
+        segments: [],
         nextParen: new Int32Array(0),
         openerEnds: new Int32Array(0),
         nextEvent: new Int32Array(0),
         spans: [],
         window: undefined,
         length: 0,
-        changed: false,
+        lastEdit: 0,
       },
     };
     return table;
@@ -770,17 +784,16 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         userMask = this.#applyUserMaskRules(src);
       } else {
         const mask = runs.mask;
-        copyInlineCodes(mask, src);
+        copyInlineCodes(runs, src);
         this.#fillInlineMask(mask, src, 0, src.length);
       }
       if (this.#userDelimiters || this.#userMaskRules) {
         const masked = this.#maskedForUser(src, runs, userMask);
-        if (hasDelimiter) scanCloserHints(masked, hints, undefined);
+        if (hasDelimiter) scanCloserHints(masked, hints);
         else hints.star = hints.underscore = hints.tilde = -1;
         return this.#tokenizeInlines(src, masked, tokens, undefined);
       }
       runs.gfm = !!this.options.gfm && !this.options.pedantic;
-      scanInlineRuns(src, runs);
       classifyInlineRuns(runs, src);
       inlineWindowHints(runs, 0, src.length, hints);
       this.#inlineRuns = runs;
@@ -807,8 +820,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   /** @hotIgnore User adapter: one masked string and one hook call per inline run. */
   #maskedForUser(src: string, runs: InlineRuns, masked: string | undefined): string {
     const mask = runs.mask;
-    const input = masked ?? (mask.changed ? inlineMaskText(mask, 0, mask.length) : src);
-    return this.#maskHook ? callMaskHook(this.#maskHook, this, input) : input;
+    const input = masked ?? (mask.lastEdit ? inlineMaskText(mask, 0, mask.length) : src);
+    return this.#maskHook?.call({ lexer: this }, input) ?? input;
   }
 
   /** @hot */
@@ -996,7 +1009,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     return tokens;
   }
 
-  /** @hotIgnore User adapter: up to three full-length mask strings for replaced inline rules. */
+  /** @hotIgnore User adapter: up to three mask strings per run and one per nested reference rewrite. */
   #applyUserMaskRules(src: string): string {
     // String with links masked to avoid interference with em and strong
     let maskedSrc = src;
@@ -1004,7 +1017,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     // Mask out reflinks
     if (this.tokens.links && src.includes('[')) {
       const reflinkSearch = this.tokenizer.rules.inline.reflinkSearch;
-      const maskReflink = (match0: string): string => {
+      const rewriteReference = (match0: string): string => {
         const refStart = match0.lastIndexOf('[');
         if (!Object.hasOwn(this.tokens.links, normalizeLabel(match0, refStart + 1, match0.length - 1))) {
           return match0;
@@ -1017,13 +1030,13 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         if (refStart > 1 && match0.charCodeAt(0) !== 33) {
           const text = match0.slice(1, refStart - 1);
           if (this.linkInText(text)) {
-            return '[' + text.replace(reflinkSearch, maskReflink)
+            return '[' + text.replace(reflinkSearch, rewriteReference)
               + '][' + 'a'.repeat(match0.length - refStart - 2) + ']';
           }
         }
         return '[' + 'a'.repeat(match0.length - 2) + ']';
       };
-      maskedSrc = maskedSrc.replace(reflinkSearch, maskReflink);
+      maskedSrc = maskedSrc.replace(reflinkSearch, rewriteReference);
     }
 
     // Mask out escaped characters.
@@ -1033,12 +1046,16 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     // A backslash inside a code span is literal, not an escape. Mask the
     // backticks inside the span instead, so blockSkip still skips all of it.
     if (maskedSrc.includes('\\') || maskedSrc.includes('`')) {
-      maskedSrc = maskedSrc.replace(this.tokenizer.rules.inline.anyPunctuationOutsideCode, maskCodeAndEscapes);
+      maskedSrc = maskedSrc.replace(this.tokenizer.rules.inline.anyPunctuationOutsideCode, (match: string, ticks: string | undefined, punctuation: string | undefined) => {
+        if (punctuation) return '+'.repeat(match.length);
+        return ticks ? ticks + match.slice(ticks.length, -ticks.length).replace(/`/g, '+') + ticks : match;
+      });
     }
 
     const { blockSkip, tag, autolink } = this.tokenizer.rules.inline;
     const cursor = this.tokenizer.rules.cursor?.inline;
-    const ranges: number[] = [];
+    let result = '';
+    let last = 0;
     let match: RegExpExecArray | null;
     blockSkip.lastIndex = 0;
     while ((match = blockSkip.exec(maskedSrc))) {
@@ -1053,9 +1070,10 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         end = start + html[0].length;
         blockSkip.lastIndex = end;
       }
-      ranges.push(start, end);
+      result += maskedSrc.slice(last, start) + '[' + 'a'.repeat(end - start - 2) + ']';
+      last = end;
     }
-    return ranges.length ? materializeUserBlockMask(maskedSrc, ranges) : maskedSrc;
+    return last ? result + maskedSrc.slice(last) : maskedSrc;
   }
 
   /** @hotIgnore Output: one message and at most one Error per stalled lex. */
@@ -1077,23 +1095,4 @@ function appendText(token: Tokens.Text | Tokens.Paragraph, raw: string, text: st
   }
   token.raw += raw;
   token.text += text;
-}
-
-function materializeUserBlockMask(src: string, ranges: number[]): string {
-  let masked = '';
-  let last = 0;
-  for (let i = 0; i < ranges.length; i += 2) {
-    const start = ranges[i];
-    const end = ranges[i + 1];
-    masked += src.slice(last, start) + '[' + 'a'.repeat(end - start - 2) + ']';
-    last = end;
-  }
-  ranges.length = 0;
-  return masked + src.slice(last);
-}
-
-function maskCodeAndEscapes(match: string, ticks: string | undefined, punctuation: string | undefined): string {
-  if (punctuation) return '+'.repeat(match.length);
-  if (ticks) return ticks + match.slice(ticks.length, -ticks.length).replace(/`/g, '+') + ticks;
-  return match;
 }
