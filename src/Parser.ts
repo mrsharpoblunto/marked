@@ -28,6 +28,13 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
     this.textRenderer.parser = this;
   }
 
+  /** @internal */
+  resetDefault(options: MarkedOptions<ParserOutput, RendererOutput>): void {
+    this.options = options;
+    options.renderer = this.renderer;
+    this.renderer.options = options;
+  }
+
   /**
    * Static Parse Method
    */

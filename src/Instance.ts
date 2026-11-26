@@ -316,6 +316,48 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
     return _Parser.parse<ParserOutput, RendererOutput>(tokens, options ?? this.defaults);
   }
 
+  #lexer: _Lexer<ParserOutput, RendererOutput> | undefined;
+  #parser: _Parser<ParserOutput, RendererOutput> | undefined;
+  #lexing = false;
+  #parsing = false;
+
+  #lexDefault(src: string, opt: MarkedOptions<ParserOutput, RendererOutput>, block: boolean) {
+    if (opt.tokenizer || opt.extensions || this.#lexing) {
+      return block ? _Lexer.lex(src, opt) : _Lexer.lexInline(src, opt);
+    }
+    const lexer = this.#lexer;
+    if (lexer) {
+      lexer.resetDefault(opt);
+    } else {
+      this.#lexer = new _Lexer(opt);
+    }
+    this.#lexing = true;
+    try {
+      return block ? this.#lexer!.lex(src) : this.#lexer!.inlineTokens(src);
+    } finally {
+      this.#lexer!.releaseDefault();
+      this.#lexing = false;
+    }
+  }
+
+  #parseDefault(tokens: Token[], opt: MarkedOptions<ParserOutput, RendererOutput>, block: boolean) {
+    if (opt.renderer || opt.extensions || opt.walkTokens || this.#parsing) {
+      return block ? _Parser.parse(tokens, opt) : _Parser.parseInline(tokens, opt);
+    }
+    const parser = this.#parser;
+    if (parser) {
+      parser.resetDefault(opt);
+    } else {
+      this.#parser = new _Parser(opt);
+    }
+    this.#parsing = true;
+    try {
+      return block ? this.#parser!.parse(tokens) : this.#parser!.parseInline(tokens);
+    } finally {
+      this.#parsing = false;
+    }
+  }
+
   private parseMarkdown(blockType: boolean) {
     type overloadedParse = {
       (src: string, options: MarkedOptions<ParserOutput, RendererOutput> & { async: true }): Promise<ParserOutput>;
@@ -353,14 +395,16 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
       if (opt.async) {
         return (async() => {
           const processedSrc = hooks ? await hooks.preprocess(src) : src;
-          const lexer = hooks ? await hooks.provideLexer(blockType) : (blockType ? _Lexer.lex : _Lexer.lexInline);
-          const tokens = await lexer(processedSrc, opt);
+          const tokens = hooks
+            ? await (await hooks.provideLexer(blockType))(processedSrc, opt)
+            : await this.#lexDefault(processedSrc, opt, blockType);
           const processedTokens = hooks ? await hooks.processAllTokens(tokens) : tokens;
           if (opt.walkTokens) {
             await Promise.all(this.walkTokens(processedTokens, opt.walkTokens));
           }
-          const parser = hooks ? await hooks.provideParser(blockType) : (blockType ? _Parser.parse : _Parser.parseInline);
-          const html = await parser(processedTokens, opt);
+          const html = hooks
+            ? await (await hooks.provideParser(blockType))(processedTokens, opt)
+            : await this.#parseDefault(processedTokens, opt, blockType);
           return hooks ? await hooks.postprocess(html) : html;
         })().catch(throwError);
       }
@@ -369,16 +413,14 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
         if (hooks) {
           src = hooks.preprocess(src) as string;
         }
-        const lexer = hooks ? hooks.provideLexer(blockType) : (blockType ? _Lexer.lex : _Lexer.lexInline);
-        let tokens = lexer(src, opt);
+        let tokens = hooks ? hooks.provideLexer(blockType)(src, opt) : this.#lexDefault(src, opt, blockType);
         if (hooks) {
           tokens = hooks.processAllTokens(tokens);
         }
         if (opt.walkTokens) {
           this.walkTokens(tokens, opt.walkTokens);
         }
-        const parser = hooks ? hooks.provideParser(blockType) : (blockType ? _Parser.parse : _Parser.parseInline);
-        let html = parser(tokens, opt);
+        let html = hooks ? hooks.provideParser(blockType)(tokens, opt) : this.#parseDefault(tokens, opt, blockType);
         if (hooks) {
           html = hooks.postprocess(html);
         }
