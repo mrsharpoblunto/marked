@@ -290,13 +290,13 @@ function setextTableDelimiter(src: string, start: number): boolean {
 }
 
 /** @hot */
-function setextInterrupts(src: string, start: number, gfm: boolean, first: boolean): boolean {
+function setextInterrupts(src: string, start: number, gfm: boolean, first: boolean, padding = 0): boolean {
   let marker = start;
   let code = src.charCodeAt(start);
   if (code === 32) {
-    do code = src.charCodeAt(++marker); while (code === 32 && marker - start < 4);
+    do code = src.charCodeAt(++marker); while (code === 32 && padding + marker - start < 4);
   }
-  if (marker - start === 4 || code === 9) return first;
+  if (padding + marker - start >= 4 || code === 9) return first;
   switch (code) {
     case 62: return true;
     case 35: return headingMarkerEnd(src, marker, false) !== marker;
@@ -620,31 +620,34 @@ function listHasHr(src: string, start: number, maxIndent: number): boolean {
 }
 
 /** @hot */
-function nestedMarkerEnd(src: string, start: number, multi: boolean): number {
+function nestedMarkerEnd(src: string, start: number, multi: boolean, padding = 0, limit = src.length): number {
+  if (padding > 3) return start;
   let marker = start;
-  while (marker - start < 3 && src.charCodeAt(marker) === 32) marker++;
+  while (padding + marker - start < 3 && src.charCodeAt(marker) === 32) marker++;
   if (src.charCodeAt(marker) === 62) {
     const next = src.charCodeAt(marker + 1);
     return next === 32 || (multi && next === 9) ? marker + 2 : marker + 1;
   }
-  const length = firstListMarkerEnd(src, start);
+  if (src.charCodeAt(marker) === 32) return start;
+  const length = firstListMarkerEnd(src, marker);
   if (!length) return start;
-  const end = start + length;
+  const end = marker + length;
   const after = src.charCodeAt(end);
   if (multi) return after === 32 || after === 9 ? blockContentStart(src, end) : start;
-  return after === 32 ? end + 1 : end === src.length ? end : start;
+  return after === 32 ? end + 1 : end === limit ? end : start;
 }
 
 /** @hot */
-function lineHasFence(src: string, start: number): boolean {
-  const markerAt = start + skipSpacesAt(src, start, 3);
+function lineHasFence(src: string, start: number, endAt = src.length, padding = 0): boolean {
+  if (padding > 3) return false;
+  const markerAt = start + skipSpacesAt(src, start, 3 - padding);
   const marker = src.charCodeAt(markerAt);
   if (marker !== 96 && marker !== 126) return false;
   let end = fenceMarkerEnd(src, markerAt);
   if (end - markerAt < 3) return false;
   if (marker === 126) return true;
-  while (end < src.length && src.charCodeAt(end) !== 96) end++;
-  return end === src.length;
+  while (end < endAt && src.charCodeAt(end) !== 96) end++;
+  return end === endAt;
 }
 
 /** @hot */
@@ -943,6 +946,59 @@ function listLineText(src: string, start: number, end: number, column: number): 
     pos++;
   }
   return hasTab ? ' '.repeat(width - column) + sourceText(src, pos, end) : sourceText(src, start, end);
+}
+
+/** @hot */
+function listLazyKind(src: string, previous: number, previousEnd: number, padding: number, offset: number,
+  maxIndent: number, first: boolean, checkStart: boolean, gfm: boolean): number {
+  let last = previous;
+  let lead = padding;
+  const tab = src.indexOf('\t', previous);
+  if (first && (tab < 0 || tab >= previousEnd)) {
+    while (!(lead <= maxIndent && listHasHr(src, last, maxIndent - lead))) {
+      const after = nestedMarkerEnd(src, last, false, lead, previousEnd);
+      if (after === last) break;
+      last = after;
+      lead = 0;
+    }
+    if (trimStartOffset(src, last, previousEnd) === previousEnd) return 0;
+  }
+
+  let content = last;
+  let width = lead;
+  while (content < previousEnd) {
+    const code = src.charCodeAt(content);
+    if (code === 32) width++;
+    else if (code === 9) width += 4;
+    else break;
+    content++;
+  }
+  if (content < previousEnd && width >= 4) return 0;
+  if (lead <= maxIndent && (startsListInterrupt(src, maxIndent - lead, false, false, last, previousEnd)
+    || listHtmlBegins(src, last, previousEnd, maxIndent - lead) || listHasHr(src, last, maxIndent - lead))) return 0;
+
+  if (checkStart) {
+    let nested = previous;
+    let indent = padding;
+    for (;;) {
+      const after = nestedMarkerEnd(src, nested, true, indent, previousEnd);
+      if (after === nested) break;
+      nested = after;
+      indent = 0;
+    }
+    if (indent <= 3) {
+      const heading = nested + skipSpacesAt(src, nested, 3 - indent);
+      if (lineHasFence(src, nested, previousEnd, indent) || headingMarkerEnd(src, heading, false) !== heading
+        || listHasHr(src, nested, 3 - indent)) return 0;
+    }
+  }
+  if ((previous === previousEnd && padding === 0) || setextUnderlineStart(src, offset, true) < 0
+    || setextInterrupts(src, previous, gfm, true, padding)) return 1;
+  for (let i = previous; i < previousEnd; i++) {
+    const code = src.charCodeAt(i);
+    if (code === 13 || code === 0x2028 || code === 0x2029) return 1;
+  }
+  return 2;
 }
 
 /** @hot */
@@ -1543,6 +1599,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           const hrRegex = this.rules.other.hrRegex === standardListHr ? undefined : this.rules.other.hrRegex(indent);
           const htmlBeginRegex = this.rules.other.htmlBeginRegex === standardListHtml ? undefined : this.rules.other.htmlBeginRegex(indent);
 
+          const gfmSetext = this.rules.block.lheading === gfmSetextRule;
+          const scanLazy = !pedantic && !hrRegex && !htmlBeginRegex
+            && this.rules.other.nestedBlockMarker === standardNestedMarkers
+            && this.rules.other.nestedContainerMarkers === standardContainerMarkers
+            && this.rules.block.fences === standardFenceRule && this.rules.block.heading === standardHeadingRule
+            && this.rules.block.hr === standardHrRule && (gfmSetext || this.rules.block.lheading === standardSetextRule);
+
           // A lazy line continues a paragraph, so it is not checked for the start of a block
           let lineIsLazy = false;
 
@@ -1582,82 +1645,95 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
                 break;
               }
 
+              if (scanLazy) {
+                let first = previousStart;
+                while (first < previousEnd && (src.charCodeAt(first) === 32 || src.charCodeAt(first) === 9)) first++;
+                const remaining = listLeadingWidth(src, previousStart, first, previousColumn) - lineIndent;
+                const previous = Math.min(first + Math.max(0, -remaining), previousEnd);
+                const lazy = listLazyKind(src, previous, previousEnd, Math.max(0, remaining), offset,
+                  maxIndent, !hasContinuation, !lineIsLazy, gfmSetext);
+                if (!lazy) break;
+                segments.push(offset - 1, offset, 0);
+                if (lazy === 2) appendListContent(src, offset, nextEnd, 0, Math.min(width, 3), 4, segments);
+                else segments.push(offset, nextEnd, 0);
+              } else {
               // The first line of an item always starts a block, which can be a
               // nested list item or block quote. Look past their markers to the
               // block a lazy line would continue. Tabs are left alone because
               // their width depends on the column they start at.
-              const previousLine = line ?? listLineText(src, previousStart, previousEnd, previousColumn);
-              const previous = sourceText(previousLine, lineIndent, previousLine.length);
-              let lastBlock = previous;
-              if (!this.options.pedantic && !hasContinuation && !previous.includes('\t')) {
-                let nested = 0;
-                while (!(hrRegex ? hrRegex.test(sourceText(lastBlock, nested, lastBlock.length)) : listHasHr(lastBlock, nested, maxIndent))) {
-                  const after = this.rules.other.nestedBlockMarker === standardNestedMarkers
-                    ? nestedMarkerEnd(lastBlock, nested, false)
-                    : nested + (this.rules.other.nestedBlockMarker.exec(sourceText(lastBlock, nested, lastBlock.length))?.[0].length ?? 0);
-                  if (after === nested) break;
-                  nested = after;
-                }
-                if (nested) lastBlock = sourceText(lastBlock, nested, lastBlock.length);
-                if (trimStartOffset(lastBlock, 0, lastBlock.length) === lastBlock.length) { // empty list item or block quote
-                  break;
-                }
-              }
-
-              // paragraph continuation unless last line was a different block level element
-              if (startsIndentedCode(lastBlock)) { // indented code block
-                break;
-              }
-              if (startsListInterrupt(lastBlock, maxIndent, pedantic, false)) {
-                break;
-              }
-              if (htmlBeginRegex ? htmlBeginRegex.test(lastBlock) : listHtmlBegins(lastBlock, 0, lastBlock.length, maxIndent)) {
-                break;
-              }
-              if (hrRegex ? hrRegex.test(lastBlock) : listHasHr(lastBlock, 0, maxIndent)) {
-                break;
-              }
-              if (!this.options.pedantic && !lineIsLazy) {
-                // `line` is relative to the item content, so a block on it can be indented up to 3 spaces whatever
-                // the item indent is. A nested list item or blockquote on it, as in `- # heading` or `> ---`, holds
-                // a block that a lazy line cannot continue either, so check what follows those markers too.
-                let nested = 0;
-                let content = previous;
-                if (this.rules.other.nestedContainerMarkers === standardContainerMarkers) {
-                  for (;;) {
-                    const after = nestedMarkerEnd(previous, nested, true);
+                const previousLine = line ?? listLineText(src, previousStart, previousEnd, previousColumn);
+                const previous = sourceText(previousLine, lineIndent, previousLine.length);
+                let lastBlock = previous;
+                if (!this.options.pedantic && !hasContinuation && !previous.includes('\t')) {
+                  let nested = 0;
+                  while (!(hrRegex ? hrRegex.test(sourceText(lastBlock, nested, lastBlock.length)) : listHasHr(lastBlock, nested, maxIndent))) {
+                    const after = this.rules.other.nestedBlockMarker === standardNestedMarkers
+                      ? nestedMarkerEnd(lastBlock, nested, false)
+                      : nested + (this.rules.other.nestedBlockMarker.exec(sourceText(lastBlock, nested, lastBlock.length))?.[0].length ?? 0);
                     if (after === nested) break;
                     nested = after;
                   }
-                } else {
-                  content = previous.replace(this.rules.other.nestedContainerMarkers, '');
+                  if (nested) lastBlock = sourceText(lastBlock, nested, lastBlock.length);
+                  if (trimStartOffset(lastBlock, 0, lastBlock.length) === lastBlock.length) { // empty list item or block quote
+                    break;
+                  }
                 }
-                const standardStarts = this.rules.block.fences === standardFenceRule
-                  && this.rules.block.heading === standardHeadingRule && this.rules.block.hr === standardHrRule;
-                if (standardStarts) {
-                  const heading = nested + skipSpacesAt(content, nested, 3);
-                  if (lineHasFence(content, nested) || headingMarkerEnd(content, heading, false) !== heading || listHasHr(content, nested, 3)) break;
-                } else {
-                  const suffix = sourceText(content, nested, content.length);
-                  if (this.rules.block.fences.test(suffix) || this.rules.block.heading.test(suffix) || this.rules.block.hr.test(suffix)) break;
-                }
-              }
 
-              // A lazy continuation can look like a setext underline after
-              // list indentation is removed. Keep it in the paragraph.
-              const setextContinuation = !this.options.pedantic
+                // paragraph continuation unless last line was a different block level element
+                if (startsIndentedCode(lastBlock)) { // indented code block
+                  break;
+                }
+                if (startsListInterrupt(lastBlock, maxIndent, pedantic, false)) {
+                  break;
+                }
+                if (htmlBeginRegex ? htmlBeginRegex.test(lastBlock) : listHtmlBegins(lastBlock, 0, lastBlock.length, maxIndent)) {
+                  break;
+                }
+                if (hrRegex ? hrRegex.test(lastBlock) : listHasHr(lastBlock, 0, maxIndent)) {
+                  break;
+                }
+                if (!this.options.pedantic && !lineIsLazy) {
+                // `line` is relative to the item content, so a block on it can be indented up to 3 spaces whatever
+                // the item indent is. A nested list item or blockquote on it, as in `- # heading` or `> ---`, holds
+                // a block that a lazy line cannot continue either, so check what follows those markers too.
+                  let nested = 0;
+                  let content = previous;
+                  if (this.rules.other.nestedContainerMarkers === standardContainerMarkers) {
+                    for (;;) {
+                      const after = nestedMarkerEnd(previous, nested, true);
+                      if (after === nested) break;
+                      nested = after;
+                    }
+                  } else {
+                    content = previous.replace(this.rules.other.nestedContainerMarkers, '');
+                  }
+                  const standardStarts = this.rules.block.fences === standardFenceRule
+                  && this.rules.block.heading === standardHeadingRule && this.rules.block.hr === standardHrRule;
+                  if (standardStarts) {
+                    const heading = nested + skipSpacesAt(content, nested, 3);
+                    if (lineHasFence(content, nested) || headingMarkerEnd(content, heading, false) !== heading || listHasHr(content, nested, 3)) break;
+                  } else {
+                    const suffix = sourceText(content, nested, content.length);
+                    if (this.rules.block.fences.test(suffix) || this.rules.block.heading.test(suffix) || this.rules.block.hr.test(suffix)) break;
+                  }
+                }
+
+                // A lazy continuation can look like a setext underline after
+                // list indentation is removed. Keep it in the paragraph.
+                const setextContinuation = !this.options.pedantic
                 && setextUnderlineStart(src, offset, true) >= 0
                 && (this.rules.block.lheading === standardSetextRule || this.rules.block.lheading === gfmSetextRule
                   ? setextTextEnd(`${previous}\n${sourceText(src, offset, nextEnd)}`, 0, this.rules.block.lheading === gfmSetextRule, false) >= 0
                   : this.rules.block.lheading.test(`${previous}\n${sourceText(src, offset, nextEnd)}`));
-              if (pedantic) {
-                itemContents += '\n' + nextLine;
-              } else {
-                segments.push(offset - 1, offset, 0);
-                if (setextContinuation) {
-                  appendListContent(src, offset, nextEnd, 0, Math.min(width, 3), 4, segments);
+                if (pedantic) {
+                  itemContents += '\n' + nextLine;
                 } else {
-                  segments.push(offset, nextEnd, 0);
+                  segments.push(offset - 1, offset, 0);
+                  if (setextContinuation) {
+                    appendListContent(src, offset, nextEnd, 0, Math.min(width, 3), 4, segments);
+                  } else {
+                    segments.push(offset, nextEnd, 0);
+                  }
                 }
               }
               lineIsLazy = true;
