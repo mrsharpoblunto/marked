@@ -5,6 +5,25 @@ export function sourceText(src: string, start: number, end: number): string {
   return start === 0 && end === src.length ? src : src.slice(start, end);
 }
 
+/** @hot */
+export function isStringWhitespace(code: number): boolean {
+  return (code >= 9 && code <= 13) || code === 32 || code === 160 || code === 0x1680
+    || (code >= 0x2000 && code <= 0x200a) || code === 0x2028 || code === 0x2029
+    || code === 0x202f || code === 0x205f || code === 0x3000 || code === 0xfeff;
+}
+
+/** @hot */
+export function trimStartOffset(src: string, start: number, end: number): number {
+  while (start < end && isStringWhitespace(src.charCodeAt(start))) start++;
+  return start;
+}
+
+/** @hot */
+export function trimEndOffset(src: string, start: number, end: number): number {
+  while (end > start && isStringWhitespace(src.charCodeAt(end - 1))) end--;
+  return end;
+}
+
 const cursorRules = new WeakMap<RegExp, RegExp>();
 
 /** @hotIgnore User adapter: one source suffix per custom rule call. */

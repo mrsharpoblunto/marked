@@ -10,6 +10,9 @@ import {
   trimTrailingBlankLines,
   execAt,
   sourceText,
+  trimStartOffset,
+  trimEndOffset,
+  isStringWhitespace,
   startCloserScan,
   cachedLastPossibleEmStrongCloserIndex,
   cachedLastPossibleDelCloserIndex,
@@ -246,6 +249,13 @@ function commonMarkTextEnd(src: string, offset: number): number {
   return end;
 }
 
+/** @hot */
+function isEscapedAt(src: string, offset: number): boolean {
+  let start = offset;
+  while (src.charCodeAt(start - 1) === 92) start--;
+  return (offset - start) % 2 !== 0;
+}
+
 /**
  * Tokenizer
  */
@@ -339,18 +349,15 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   headingAt(src: string, offset: number): Tokens.Heading | undefined {
     const cap = execAt(this.rules.block.heading, src, offset);
     if (cap) {
-      let text = cap[2].trim();
-
-      // remove trailing #s
-      if (this.rules.other.endingHash.test(text)) {
-        const trimmed = rtrim(text, '#');
-        if (this.options.pedantic) {
-          text = trimmed.trim();
-        } else if (!trimmed || this.rules.other.endingSpaceTabChar.test(trimmed)) {
-          // CommonMark requires a space or tab before trailing #s
-          text = trimmed.trim();
-        }
+      const start = trimStartOffset(cap[2], 0, cap[2].length);
+      let end = trimEndOffset(cap[2], start, cap[2].length);
+      let hash = end;
+      while (hash > start && cap[2].charCodeAt(hash - 1) === 35) hash--;
+      const beforeHash = cap[2].charCodeAt(hash - 1);
+      if (hash < end && (this.options.pedantic || hash === start || beforeHash === 32 || beforeHash === 9)) {
+        end = trimEndOffset(cap[2], start, hash);
       }
+      const text = sourceText(cap[2], start, end);
 
       return {
         type: 'heading',
@@ -618,7 +625,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           ? expandTabs(firstLine, bulletIndent)
           : firstLine.replace(this.rules.other.leadingSpaceTab, whitespace => expandTabs(whitespace, bulletIndent));
         let nextLine = '';
-        let blankLine = !line.trim();
+        let blankLine = trimStartOffset(line, 0, line.length) === line.length;
 
         let indent = 0;
         if (this.options.pedantic) {
@@ -633,9 +640,14 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           indent += bulletIndent;
         }
 
-        if (blankLine && this.rules.other.blankLine.test(nextLine = src.slice(offset, lineEnd(src, offset)))) { // Items begin with at most one blank line
-          offset = Math.min(src.length, offset + nextLine.length + 1);
-          endEarly = true;
+        if (blankLine) {
+          let next = offset;
+          while (src.charCodeAt(next) === 32 || src.charCodeAt(next) === 9) next++;
+          // Items begin with at most one blank line.
+          if (next === src.length || src.charCodeAt(next) === 10) {
+            offset = Math.min(src.length, next + 1);
+            endEarly = true;
+          }
         }
 
         if (!endEarly) {
@@ -695,7 +707,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               break;
             }
 
-            if (nextLineWithoutTabs.search(this.rules.other.nonSpaceChar) >= indent || !nextLine.trim()) { // Dedent if possible
+            if (nextLineWithoutTabs.search(this.rules.other.nonSpaceChar) >= indent || trimStartOffset(nextLine, 0, nextLine.length) === nextLine.length) { // Dedent if possible
               itemContents += '\n' + nextLineWithoutTabs.slice(indent);
               lineIsLazy = false;
             } else {
@@ -714,7 +726,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
                 while (!hrRegex.test(lastBlock) && (marker = this.rules.other.nestedBlockMarker.exec(lastBlock))) {
                   lastBlock = lastBlock.slice(marker[0].length);
                 }
-                if (!lastBlock.trim()) { // empty list item or block quote
+                if (trimStartOffset(lastBlock, 0, lastBlock.length) === lastBlock.length) { // empty list item or block quote
                   break;
                 }
               }
@@ -757,7 +769,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               lineIsLazy = true;
             }
 
-            blankLine = !nextLine.trim();
+            blankLine = trimStartOffset(nextLine, 0, nextLine.length) === nextLine.length;
 
             offset = Math.min(src.length, offset + rawLine.length + 1);
             line = nextLineWithoutTabs.slice(indent);
@@ -913,7 +925,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     const cap = execAt(this.rules.block.def, src, offset);
     if (cap) {
       // outside angle brackets a link destination holds only balanced parentheses
-      if (!this.rules.other.startAngleBracket.test(cap[2]) && findClosingBracket(cap[2], '()') !== -1) {
+      if (cap[2].charCodeAt(0) !== 60 && findClosingBracket(cap[2], '()') !== -1) {
         return;
       }
 
@@ -1019,7 +1031,8 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   lheadingAt(src: string, offset: number): Tokens.Heading | undefined {
     const cap = execAt(this.rules.block.lheading, src, offset);
     if (cap) {
-      const text = cap[1].trim();
+      const start = trimStartOffset(cap[1], 0, cap[1].length);
+      const text = sourceText(cap[1], start, trimEndOffset(cap[1], start, cap[1].length));
       return {
         type: 'heading',
         raw: rtrim(cap[0], '\n'),
@@ -1160,18 +1173,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         return;
       }
 
-      const trimmedUrl = cap[2].trim();
-      if (!this.options.pedantic && this.rules.other.startAngleBracket.test(trimmedUrl)) {
-        // commonmark requires matching angle brackets
-        if (!(this.rules.other.endAngleBracket.test(trimmedUrl))) {
-          return;
-        }
-
-        // ending angle bracket cannot be escaped
-        const rtrimSlash = rtrim(trimmedUrl.slice(0, -1), '\\');
-        if ((trimmedUrl.length - rtrimSlash.length) % 2 === 0) {
-          return;
-        }
+      const url = cap[2];
+      const urlStart = trimStartOffset(url, 0, url.length);
+      const urlEnd = trimEndOffset(url, urlStart, url.length);
+      const endsWithBracket = url.charCodeAt(urlEnd - 1) === 62;
+      if (!this.options.pedantic && url.charCodeAt(urlStart) === 60) {
+        if (!endsWithBracket || isEscapedAt(url, urlEnd - 1)) return;
       } else {
         // find closing parenthesis
         const lastParenIndex = findClosingBracket(cap[2], '()');
@@ -1181,7 +1188,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         }
 
         if (lastParenIndex > -1) {
-          const start = cap[0].indexOf('!') === 0 ? 5 : 4;
+          const start = cap[0].charCodeAt(0) === 33 ? 5 : 4;
           const linkLen = start + cap[1].length + lastParenIndex;
           cap[2] = cap[2].substring(0, lastParenIndex);
           cap[0] = cap[0].substring(0, linkLen).trim();
@@ -1190,8 +1197,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       }
       // The ')' that ends the match is the link closer only when it is not
       // escaped. `[foo](/url\)` has no closer; that paren is destination text.
-      const unescaped = rtrim(cap[0].slice(0, -1), '\\');
-      if ((cap[0].length - unescaped.length) % 2 === 0) {
+      if (isEscapedAt(cap[0], cap[0].length - 1)) {
         return;
       }
       let href = cap[2];
@@ -1208,15 +1214,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         title = cap[3] ? cap[3].slice(1, -1) : '';
       }
 
-      href = href.trim();
-      if (this.rules.other.startAngleBracket.test(href)) {
-        if (this.options.pedantic && !(this.rules.other.endAngleBracket.test(trimmedUrl))) {
-          // pedantic allows starting angle bracket without ending angle bracket
-          href = href.slice(1);
-        } else {
-          href = href.slice(1, -1);
-        }
+      let hrefStart = href.length === url.length ? urlStart : trimStartOffset(href, 0, href.length);
+      let hrefEnd = href.length === url.length ? urlEnd : trimEndOffset(href, hrefStart, href.length);
+      if (href.charCodeAt(hrefStart) === 60) {
+        hrefStart++;
+        if (!this.options.pedantic || endsWithBracket) hrefEnd--;
       }
+      href = sourceText(href, hrefStart, hrefEnd);
       return outputLink(cap, {
         href: href ? href.replace(this.rules.inline.anyPunctuation, '$1') : href,
         title: title ? title.replace(this.rules.inline.anyPunctuation, '$1') : title,
@@ -1307,7 +1311,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       // Rules 9-10 count the whole run, and also apply when the opener could
       // close as well (`a*b**`, where `*` is both left- and right-flanking).
       const runLength = srcStart - runStart + lLength;
-      const openerCanClose = !this.options.pedantic && !!runPrevChar.trim()
+      const openerCanClose = !this.options.pedantic && !isStringWhitespace(runPrevChar.charCodeAt(0)) && runStart > 0
         && (!!nextChar || (delimChar === '*' && !runPrevPunct));
       if (delimChar !== '*' && delimChar !== '_') return;
       const closerRule = delimChar === '*' ? this.rules.inline.emStrongRDelimAst : this.rules.inline.emStrongRDelimUnd;
@@ -1387,12 +1391,23 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (src.charCodeAt(offset) !== 96) return; // `
     const cap = execAt(this.rules.inline.code, src, offset);
     if (cap) {
-      let text = cap[2].replace(this.rules.other.newLineCharGlobal, ' ');
-      const hasNonSpaceChars = this.rules.other.nonSpaceChar.test(text);
-      const hasSpaceCharsOnBothEnds = this.rules.other.startingSpaceChar.test(text) && this.rules.other.endingSpaceChar.test(text);
-      if (hasNonSpaceChars && hasSpaceCharsOnBothEnds) {
-        text = text.substring(1, text.length - 1);
+      const content = cap[2];
+      let start = 0;
+      let end = content.length;
+      const first = content.charCodeAt(0);
+      const last = content.charCodeAt(end - 1);
+      if ((first === 32 || first === 10) && (last === 32 || last === 10)) {
+        for (let i = 1; i < end - 1; i++) {
+          const code = content.charCodeAt(i);
+          if (code !== 32 && code !== 10) {
+            start++;
+            end--;
+            break;
+          }
+        }
       }
+      const trimmed = sourceText(content, start, end);
+      const text = trimmed.indexOf('\n') < 0 ? trimmed : trimmed.replace(this.rules.other.newLineCharGlobal, ' ');
       return {
         type: 'codespan',
         raw: cap[0],
