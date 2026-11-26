@@ -1,8 +1,9 @@
+import type { BlockSource } from './BlockLine.ts';
 import { block, inline, noopTest, other } from './rules.ts';
 
 /** @hotIgnore Output: at most one string for each token field. */
-export function sourceText(src: string, start: number, end: number): string {
-  return start === 0 && end === src.length ? src : src.slice(start, end);
+export function sourceText(src: BlockSource, start: number, end: number): string {
+  return typeof src === 'string' && start === 0 && end === src.length ? src : src.slice(start, end);
 }
 
 /** @hot */
@@ -13,13 +14,13 @@ export function isStringWhitespace(code: number): boolean {
 }
 
 /** @hot */
-export function trimStartOffset(src: string, start: number, end: number): number {
+export function trimStartOffset(src: BlockSource, start: number, end: number): number {
   while (start < end && isStringWhitespace(src.charCodeAt(start))) start++;
   return start;
 }
 
 /** @hot */
-export function trimEndOffset(src: string, start: number, end: number): number {
+export function trimEndOffset(src: BlockSource, start: number, end: number): number {
   while (end > start && isStringWhitespace(src.charCodeAt(end - 1))) end--;
   return end;
 }
@@ -120,12 +121,13 @@ export const preparedLexerRules = {
 };
 
 /** @hotIgnore User adapter: one source suffix per custom rule call. */
-function execUserRule(rule: RegExp, src: string, offset: number): RegExpExecArray | null {
+function execUserRule(rule: RegExp, src: BlockSource, offset: number): RegExpExecArray | null {
   return rule.exec(src.slice(offset));
 }
 
 /** @hot */
-export function execAt(rule: RegExp, src: string, offset: number, prepared: CursorRule | undefined): RegExpExecArray | null {
+export function execAt(rule: RegExp, src: BlockSource, offset: number, prepared: CursorRule | undefined): RegExpExecArray | null {
+  if (typeof src !== 'string') return execUserRule(rule, src, offset);
   if (offset === 0) return rule.exec(src);
   if (prepared?.original !== rule) return execUserRule(rule, src, offset);
   const sticky = prepared.sticky;
@@ -224,7 +226,7 @@ export function cleanUrl(href: string) {
 }
 
 /** @hot */
-export function splitCells(tableRow: string, rowStart: number, rowEnd: number, count: number): string[] {
+export function splitCells(tableRow: BlockSource, rowStart: number, rowEnd: number, count: number): string[] {
   const cells: string[] = [];
   let start = rowStart;
   let escaped = false;
@@ -288,7 +290,7 @@ export function trimTrailingBlankLines(str: string) {
  * keeps the folded label lower case, the form `def.tag` has always used.
  */
 /** @hot */
-export function normalizeLabel(label: string, first = 0, last = label.length): string {
+export function normalizeLabel(label: BlockSource, first = 0, last = label.length): string {
   const start = trimStartOffset(label, first, last);
   const end = trimEndOffset(label, start, last);
   let needsRewrite = false;
@@ -446,7 +448,7 @@ export function expandTabs(line: string, indent = 0): string {
  * so a tab there stays literal. Lines from the first list item on are returned as is, because
  * the item's columns and the fences inside it are not tracked here.
  */
-export function expandBlockquoteTabs(src: string, first: number, limit: number): string {
+export function expandBlockquoteTabs(src: BlockSource, first: number, limit: number): string {
   let fenceMarker = 0;
   let fenceLength = 0;
   let fenceDepth = Infinity;
@@ -498,7 +500,7 @@ export function expandBlockquoteTabs(src: string, first: number, limit: number):
 }
 
 /** @hot */
-function quoteContentStart(src: string, offset: number, end: number, indent: number): number {
+function quoteContentStart(src: BlockSource, offset: number, end: number, indent: number): number {
   while (offset < end && src.charCodeAt(offset) === 32 && indent <= 3) {
     offset++;
     indent++;
@@ -507,7 +509,7 @@ function quoteContentStart(src: string, offset: number, end: number, indent: num
 }
 
 /** @hot */
-function quoteFenceLength(src: string, start: number, end: number, closing: boolean): number {
+function quoteFenceLength(src: BlockSource, start: number, end: number, closing: boolean): number {
   const marker = src.charCodeAt(start);
   if (marker !== 96 && marker !== 126) return 0;
   let offset = start + 1;
@@ -526,7 +528,7 @@ function quoteFenceLength(src: string, start: number, end: number, closing: bool
 }
 
 /** @hot */
-function quoteListStarter(src: string, start: number, end: number): boolean {
+function quoteListStarter(src: BlockSource, start: number, end: number): boolean {
   let offset = start;
   let code = src.charCodeAt(offset);
   if (code !== 42 && code !== 43 && code !== 45) {
@@ -547,7 +549,7 @@ interface BlockquoteLine {
   contentIndent: number;
 }
 
-function splitBlockquoteLine(src: string, start: number, end: number, maxDepth: number, part: BlockquoteLine): void {
+function splitBlockquoteLine(src: BlockSource, start: number, end: number, maxDepth: number, part: BlockquoteLine): void {
   let i = start;
   let col = 0;
   let depth = 0;

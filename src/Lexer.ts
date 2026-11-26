@@ -1,3 +1,4 @@
+import type { BlockLineView, BlockSource } from './BlockLine.ts';
 import { tokenKind, TokenKind } from './tokenKind.ts';
 import { createText } from './tokenFactories.ts';
 import { _Tokenizer } from './Tokenizer.ts';
@@ -79,7 +80,7 @@ export function configureTokenizer<P, R>(tokenizer: _Tokenizer<P, R>): void {
 /** @hotIgnore User adapter: one source suffix per cursor position and one context per extension. */
 function callExtensions<P, R>(
   extensions: NonNullable<NonNullable<MarkedOptions['extensions']>['block']>,
-  lexer: _Lexer<P, R>, src: string, offset: number, tokens: Token[],
+  lexer: _Lexer<P, R>, src: BlockSource, offset: number, tokens: Token[],
 ): Tokens.Generic | undefined {
   const suffix = src.slice(offset);
   const count = extensions.length;
@@ -91,10 +92,19 @@ function callExtensions<P, R>(
 }
 
 /** @hotIgnore User adapter: at most two source strings and one context per start callback. */
+/** @internal */
 function clipForExtensions<P, R>(
   extensions: NonNullable<NonNullable<MarkedOptions['extensions']>['startBlock']>,
   lexer: _Lexer<P, R>, src: string, offset: number,
-): string {
+): string;
+function clipForExtensions<P, R>(
+  extensions: NonNullable<NonNullable<MarkedOptions['extensions']>['startBlock']>,
+  lexer: _Lexer<P, R>, src: BlockSource, offset: number,
+): BlockSource;
+function clipForExtensions<P, R>(
+  extensions: NonNullable<NonNullable<MarkedOptions['extensions']>['startBlock']>,
+  lexer: _Lexer<P, R>, src: BlockSource, offset: number,
+): BlockSource {
   let startIndex = Infinity;
   const suffix = src.slice(offset + 1);
   const count = extensions.length;
@@ -257,13 +267,15 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    */
   blockTokens(src: string, tokens?: Token[], lastParagraphClipped?: boolean): Token[];
   blockTokens(src: string, tokens?: TokensList, lastParagraphClipped?: boolean): TokensList;
-  blockTokens(src: string, tokens: Token[] = [], lastParagraphClipped = false) {
+  /** @internal */
+  blockTokens(src: BlockLineView, tokens: Token[], lastParagraphClipped?: boolean): Token[];
+  blockTokens(src: BlockSource, tokens: Token[] = [], lastParagraphClipped = false) {
     this.tokenizer.lexer = this;
     // list items and block quotes lex their contents with a nested call, so
     // restore the outer last token when it returns
     const outerLastToken = this.state.lastToken;
     if (this.options.pedantic) {
-      src = src.replace(other.tabCharGlobal, '    ').replace(other.spaceLine, '');
+      src = sourceText(src, 0, src.length).replace(other.tabCharGlobal, '    ').replace(other.spaceLine, '');
     }
 
     let offset = 0;
