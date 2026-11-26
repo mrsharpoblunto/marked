@@ -1,5 +1,5 @@
 import { blockContentStart, blockIndent, blockIndentEnd, blockLineEnd, thematicBreakEnd } from './BlockLine.ts';
-import { tokenKind, TokenKind } from './tokenKind.ts';
+import { TokenKind } from './tokenKind.ts';
 import {
   createBlockquote, createBr, createCheckbox, createCode, createCodespan,
   createDef, createDel, createEm, createEscape, createHeading, createHr,
@@ -910,7 +910,7 @@ function stripQuoteMarkers(src: string, start: number, end: number): string {
   return result + sourceText(src, span, end);
 }
 
-/** @hotIgnore Output: one string for each container token. */
+/** @hotIgnore Output: one string for each contiguous container run. */
 function containerText(src: string, segments: number[]): string {
   let text = '';
   for (let i = 0; i < segments.length; i += 3) {
@@ -931,7 +931,7 @@ function quoteSegments(src: string, first: number, end: number, segments: number
   while (start < end) {
     const marker = quoteMarkerAt(src, start);
     if (marker >= 0) {
-      segments.push(span, start, padding);
+      if (span < start || padding) segments.push(span, start, padding);
       padding = 0;
       span = marker + 1;
       const next = src.charCodeAt(span);
@@ -1235,7 +1235,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         }
 
         const lastToken = tokens.at(-1);
-        const kind = lastToken && (this.options.tokenizer || this.options.extensions ? tokenKind(lastToken) : lastToken.kind ?? tokenKind(lastToken));
+        const kind = this.lexer.blockKind(lastToken);
 
         if (kind === TokenKind.Code || kind === TokenKind.Heading || kind === TokenKind.Hr || kind === TokenKind.Html || kind === TokenKind.Table) {
           // blockquote continuation cannot be preceded by a code block, heading, hr, html block or table
