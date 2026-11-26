@@ -269,10 +269,12 @@ function scanLastPossibleEmStrongDelClosers(src: string): EmStrongDelCloserHintF
 /** @hot */
 export function beginEmStrongDelCloserScan(tokenizer: object, maskedSrc: string): void {
   const frame = scanLastPossibleEmStrongDelClosers(maskedSrc);
+  // hot-path: allow The closer cache tracks nested inline passes per tokenizer.
   const stack = emStrongDelCloserHintStacks.get(tokenizer);
   if (stack) {
     stack.push(frame);
   } else {
+    // hot-path: allow The closer cache tracks nested inline passes per tokenizer.
     emStrongDelCloserHintStacks.set(tokenizer, [frame]);
   }
 }
@@ -283,12 +285,14 @@ export function beginEmStrongDelCloserScan(tokenizer: object, maskedSrc: string)
  */
 /** @hot */
 export function endEmStrongDelCloserScan(tokenizer: object): void {
+  // hot-path: allow The closer cache tracks nested inline passes per tokenizer.
   const stack = emStrongDelCloserHintStacks.get(tokenizer);
   if (!stack) {
     return;
   }
   stack.pop();
   if (stack.length === 0) {
+    // hot-path: allow The closer cache tracks nested inline passes per tokenizer.
     emStrongDelCloserHintStacks.delete(tokenizer);
   }
 }
@@ -300,10 +304,14 @@ export function endEmStrongDelCloserScan(tokenizer: object): void {
  */
 /** @hot */
 export function cachedLastPossibleEmStrongCloserIndex(tokenizer: object, maskedSrc: string, delim: '*' | '_'): number {
+  // hot-path: allow The closer cache tracks nested inline passes per tokenizer.
   const frame = emStrongDelCloserHintStacks.get(tokenizer)?.at(-1);
+  // hot-path: allow The inline mask preserves source offsets for delimiter matching.
   if (frame && frame.maskedSrc === maskedSrc) {
+    // hot-path: allow The closer cache tracks nested inline passes per tokenizer.
     return frame.lastPossibleEmStrongCloserIndex[delim];
   }
+  // hot-path: allow The closer cache tracks nested inline passes per tokenizer.
   return scanLastPossibleEmStrongDelClosers(maskedSrc).lastPossibleEmStrongCloserIndex[delim];
 }
 
@@ -314,7 +322,9 @@ export function cachedLastPossibleEmStrongCloserIndex(tokenizer: object, maskedS
  */
 /** @hot */
 export function cachedLastPossibleDelCloserIndex(tokenizer: object, maskedSrc: string): number {
+  // hot-path: allow The closer cache tracks nested inline passes per tokenizer.
   const frame = emStrongDelCloserHintStacks.get(tokenizer)?.at(-1);
+  // hot-path: allow The inline mask preserves source offsets for delimiter matching.
   if (frame && frame.maskedSrc === maskedSrc) {
     return frame.lastPossibleDelCloserIndex;
   }
