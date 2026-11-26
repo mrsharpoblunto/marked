@@ -586,8 +586,9 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       }
       if (token = this.tokenizer.inlineText(cutSrc)) {
         src = src.substring(token.raw.length);
-        if (token.raw.slice(-1) !== '_') { // Track prevChar before string of ____ started
-          prevChar = token.raw.slice(-1);
+        const lastChar = token.raw.slice(-1);
+        if (lastChar !== '_') { // Track prevChar before string of ____ started
+          prevChar = lastChar;
         }
         keepPrevChar = true;
         const lastToken = tokens.at(-1);
@@ -638,7 +639,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       masked += src.slice(last, start) + '[' + 'a'.repeat(end - start - 2) + ']';
       last = end;
     }
-    return masked + src.slice(last);
+    return last === 0 ? src : masked + src.slice(last);
   }
 
   /**
