@@ -11,6 +11,7 @@ import type { MarkedOptions } from './MarkedOptions.ts';
 
 const standardEscapeMask = inline.normal.anyPunctuationOutsideCode;
 const standardBlockMask = inline.normal.blockSkip;
+const standardNoDelCloser = inline.normal.delRDelim;
 
 const tokenizerFlags = {
   space: 1 << 0,
@@ -649,7 +650,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     const fullMask = !!this.#maskHook || !!(this.#replaced & (tokenizerFlags.emStrong | tokenizerFlags.del))
       || cursor?.star.original !== rules.inline.emStrongRDelimAst
       || cursor?.underscore.original !== rules.inline.emStrongRDelimUnd
-      || (rules.inline.delRDelim !== inline.normal.delRDelim && cursor?.tilde?.original !== rules.inline.delRDelim);
+      || (rules.inline.delRDelim !== standardNoDelCloser && cursor?.tilde?.original !== rules.inline.delRDelim);
     if (!hasDelimiter) {
       return this.#tokenizeInlines(src, fullMask ? this.#maskSrc(src, undefined, true) : src, tokens, undefined);
     }

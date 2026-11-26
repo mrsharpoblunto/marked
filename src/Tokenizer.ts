@@ -1884,11 +1884,26 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
                   } else {
                     content = replaceUserContainerRule(this.rules.other.nestedContainerMarkers, previous, 0, previous.length, '');
                   }
-                  const standardStarts = this.rules.block.fences === standardFenceRule
-                  && this.rules.block.heading === standardHeadingRule && this.rules.block.hr === standardHrRule;
+                  const fenceRule = this.rules.block.fences;
+                  const headingRule = this.rules.block.heading;
+                  const pedanticHeading = headingRule === pedanticHeadingRule;
+                  const standardStarts = (fenceRule === standardFenceRule || fenceRule === noFenceRule)
+                    && (headingRule === standardHeadingRule || pedanticHeading) && this.rules.block.hr === standardHrRule;
                   if (standardStarts) {
-                    const heading = nested + skipSpacesAt(content, nested, 3);
-                    if (lineHasFence(content, nested) || headingMarkerEnd(content, heading, false) !== heading || listHasHr(content, nested, 3)) break;
+                    const heading = nested + (pedanticHeading ? 0 : skipSpacesAt(content, nested, 3));
+                    const hashEnd = headingMarkerEnd(content, heading, pedanticHeading);
+                    let hasHeading = hashEnd !== heading;
+                    if (hasHeading && pedanticHeading) {
+                      for (let pos = hashEnd; pos < content.length; pos++) {
+                        const code = content.charCodeAt(pos);
+                        if (code === 13 || code === 0x2028 || code === 0x2029) {
+                          hasHeading = false;
+                          break;
+                        }
+                      }
+                    }
+                    if ((fenceRule === standardFenceRule && lineHasFence(content, nested))
+                      || hasHeading || listHasHr(content, nested, 3)) break;
                   } else {
                     if (testUserListStarts(this.rules.block, content, nested)) break;
                   }
@@ -1896,11 +1911,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
                 // A lazy continuation can look like a setext underline after
                 // list indentation is removed. Keep it in the paragraph.
+                const setextRule = this.rules.block.lheading;
+                const builtInSetext = setextRule === standardSetextRule || setextRule === gfmSetextRule || setextRule === pedanticSetextRule;
                 const setextContinuation = !this.options.pedantic
                 && setextUnderlineStart(src, offset, true) >= 0
-                && (this.rules.block.lheading === standardSetextRule || this.rules.block.lheading === gfmSetextRule
-                  ? setextTextEnd(`${previous}\n${sourceText(src, offset, nextEnd)}`, 0, this.rules.block.lheading === gfmSetextRule, false) >= 0
-                  : testUserListSetext(this.rules.block.lheading, previous, src, offset, nextEnd));
+                && (builtInSetext
+                  ? setextTextEnd(`${previous}\n${sourceText(src, offset, nextEnd)}`, 0, setextRule === gfmSetextRule, setextRule === pedanticSetextRule) >= 0
+                  : testUserListSetext(setextRule, previous, src, offset, nextEnd));
                 if (pedantic) {
                   itemContents += '\n' + nextLine;
                 } else {
