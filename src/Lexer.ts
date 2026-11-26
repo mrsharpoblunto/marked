@@ -36,6 +36,9 @@ const tokenizerFlags = {
   inlineText: 1 << 23,
 };
 
+const blockRuleDispatch = ['code', 'fences', 'heading', 'hr', 'blockquote', 'list', 'html', 'def', 'table'] as const;
+let rulesExposed = false;
+
 const tokenizerMethods = Object.keys(tokenizerFlags) as TokenizerMethod[];
 type TokenizerMethod = keyof typeof tokenizerFlags;
 
@@ -193,6 +196,13 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         rules.inline = inline.gfm;
       }
     }
+    // A replacement regex can recognize a prefix outside the default grammar.
+    // Select those dispatch entries before the first block is read.
+    if (rulesExposed || suppliedTokenizer) {
+      for (const name of blockRuleDispatch) {
+        if (rules.block[name] !== rules.cursor!.block[name].original) this.#replaced |= tokenizerFlags[name];
+      }
+    }
     this.tokenizer.rules = rules;
   }
 
@@ -200,6 +210,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    * Expose Rules
    */
   static get rules() {
+    rulesExposed = true;
     return {
       block,
       inline,

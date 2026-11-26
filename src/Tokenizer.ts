@@ -286,20 +286,34 @@ function setextTableDelimiter(src: string, start: number): boolean {
 /** @hot */
 function setextInterrupts(src: string, start: number, gfm: boolean, first: boolean): boolean {
   let marker = start;
-  while (marker - start < 4 && src.charCodeAt(marker) === 32) marker++;
-  const code = src.charCodeAt(marker);
-  if (marker - start === 4 || code === 9) return first;
-  if (code === 62) return true;
-  if (code === 35 && headingMarkerEnd(src, marker, false) !== marker) return true;
-  if ((code === 96 || code === 126) && src.charCodeAt(marker + 1) === code && src.charCodeAt(marker + 2) === code) return true;
-  if (code === 60) {
-    htmlInterrupt.lastIndex = start;
-    if (htmlInterrupt.test(src)) return true;
+  let code = src.charCodeAt(start);
+  if (code === 32) {
+    do code = src.charCodeAt(++marker); while (code === 32 && marker - start < 4);
   }
-  if ((code === 45 || code === 95 || code === 42) && !first && thematicBreakEnd(src, marker) >= 0) return true;
+  if (marker - start === 4 || code === 9) return first;
+  switch (code) {
+    case 62: return true;
+    case 35: return headingMarkerEnd(src, marker, false) !== marker;
+    case 96:
+    case 126: return src.charCodeAt(marker + 1) === code && src.charCodeAt(marker + 2) === code;
+    case 60:
+      htmlInterrupt.lastIndex = start;
+      return htmlInterrupt.test(src);
+    case 45:
+    case 95:
+    case 42:
+      if (!first && thematicBreakEnd(src, marker) >= 0) return true;
+      if (code === 95) return false;
+      break;
+    case 43: break;
+    case 124:
+    case 58: return gfm && setextTableDelimiter(src, marker);
+    default:
+      if (code < 48 || code > 57 || marker === src.length) return false;
+  }
   const bullet = firstListMarkerEnd(src, start);
   if (bullet && src.charCodeAt(start + bullet) === 32) return true;
-  return gfm && (code === 124 || code === 58 || code === 45) && setextTableDelimiter(src, marker);
+  return code === 45 && gfm && setextTableDelimiter(src, marker);
 }
 
 /** @hot */
@@ -320,11 +334,16 @@ function setextUnderlineStart(src: string, start: number, pedantic: boolean): nu
 
 /** @hot */
 function setextTextEnd(src: string, start: number, gfm: boolean, pedantic: boolean): number {
-  if (!pedantic && setextInterrupts(src, start, gfm, true)) return -1;
   let end = lineEnd(src, start);
-  if (end === start) return -1;
+  if (end === start || end === src.length) return -1;
+  if (!pedantic && setextInterrupts(src, start, gfm, true)) return -1;
   while (end < src.length) {
     const line = end + 1;
+    const code = src.charCodeAt(line) | 32;
+    if (!pedantic && code >= 97 && code <= 122) {
+      end = lineEnd(src, line);
+      continue;
+    }
     if (setextUnderlineStart(src, line, pedantic) >= 0) {
       for (let i = start; i < end; i++) {
         const code = src.charCodeAt(i);
