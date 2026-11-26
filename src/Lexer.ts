@@ -256,7 +256,14 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    */
   blockTokens(src: string, tokens?: Token[], lastParagraphClipped?: boolean): Token[];
   blockTokens(src: string, tokens?: TokensList, lastParagraphClipped?: boolean): TokensList;
+  /** @hot */
   blockTokens(src: string, tokens: Token[] = [], lastParagraphClipped = false) {
+    return this.blockTokensAt(src, 0, tokens, lastParagraphClipped);
+  }
+
+  /** @internal */
+  /** @hot */
+  blockTokensAt(src: string, offset: number, tokens: Token[], lastParagraphClipped: boolean): Token[] {
     this.tokenizer.lexer = this;
     // list items and block quotes lex their contents with a nested call, so
     // restore the outer last token when it returns
@@ -265,7 +272,6 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       src = src.replace(other.tabCharGlobal, '    ').replace(other.spaceLine, '');
     }
 
-    let offset = 0;
     let previousOffset = -1;
     let lastParagraph: Token | undefined;
     const mergeAdjacentParagraphs = this.options.gfm && !this.options.pedantic

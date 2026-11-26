@@ -418,7 +418,8 @@ function quoteMarkerAt(src: string, start: number): number {
   return src.charCodeAt(marker) === 62 ? marker : -1;
 }
 
-function quoteText(src: string, first: number, end: number): string {
+// Return an offset when the content is a single source span.
+function quoteText(src: string, first: number, end: number): string | number {
   let span = first;
   let text = '';
   let start = first;
@@ -461,7 +462,7 @@ function quoteText(src: string, first: number, end: number): string {
     followsNewline = code === 10;
     start++;
   }
-  return text + sourceText(src, span, end);
+  return text.length === 0 ? span : text + sourceText(src, span, end);
 }
 
 /**
@@ -622,14 +623,17 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           start = line + 1;
         }
 
-        let currentText: string;
+        let contentSource = src;
+        let contentStart = position;
+        let contentEnd = end;
         const tab = src.indexOf('\t', position);
         if (tab >= 0 && tab < end && this.lexer.state.top && !this.lexer.state.inBlockquote) {
-          const expanded = expandBlockquoteTabs(src, position, end);
-          currentText = quoteText(expanded, 0, expanded.length);
-        } else {
-          currentText = quoteText(src, position, end);
+          contentSource = expandBlockquoteTabs(src, position, end);
+          contentStart = 0;
+          contentEnd = contentSource.length;
         }
+        const content = quoteText(contentSource, contentStart, contentEnd);
+        const currentText = typeof content === 'number' ? sourceText(contentSource, content, contentEnd) : content;
         position = end + 1;
         rawEnd = end;
         text = text ? `${text}\n${currentText}` : currentText;
@@ -640,7 +644,11 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         const outerInBlockquote = this.lexer.state.inBlockquote;
         this.lexer.state.top = true;
         this.lexer.state.inBlockquote = true;
-        this.lexer.blockTokens(currentText, tokens, true);
+        if (typeof content === 'number' && contentEnd === contentSource.length && !this.options.pedantic) {
+          this.lexer.blockTokensAt(contentSource, content, tokens, true);
+        } else {
+          this.lexer.blockTokens(currentText, tokens, true);
+        }
         this.lexer.state.top = top;
         this.lexer.state.inBlockquote = outerInBlockquote;
 
@@ -771,6 +779,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       const list: Tokens.List = createList('', isordered, start, false);
 
       let previousBlankLine = false;
+      let finalSourceStart = -1;
       // Check if current bullet point can start a new List Item
       while (offset < src.length) {
         let endEarly = false;
@@ -807,6 +816,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           indent = skipSpaces(line, line.length);
           indent = indent > 4 ? 1 : indent; // Treat indented code blocks (> 4 spaces) as having only 1 indent
           itemContents = line.slice(indent);
+          if (firstLineEnd === src.length && src.indexOf('\t', firstLineStart) === -1) {
+            finalSourceStart = firstLineStart + indent;
+          }
           indent += bulletIndent;
         }
 
@@ -946,7 +958,11 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       for (const item of list.items) {
         this.lexer.state.top = false;
         queueStarts.push(this.lexer.inlineQueue.length);
-        this.lexer.blockTokens(item.text, item.tokens);
+        if (item === lastItem && finalSourceStart >= 0 && item.text.length === src.length - finalSourceStart) {
+          this.lexer.blockTokensAt(src, finalSourceStart, item.tokens, false);
+        } else {
+          this.lexer.blockTokens(item.text, item.tokens);
+        }
 
         if (!list.loose) {
           for (let i = 0; i < item.tokens.length; i++) {
