@@ -25,7 +25,7 @@ import {
   startCloserScan,
   lastCloser,
 } from './helpers.ts';
-import { block, inline, other, paragraphHtmlStart, type Rules } from './rules.ts';
+import { _tag, block, inline, other, paragraphHtmlStart, type Rules } from './rules.ts';
 import type { _Lexer } from './Lexer.ts';
 import type { Links, Tokens, Token } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
@@ -200,6 +200,7 @@ const standardTaskCheckbox = other.listTaskCheckbox;
 const standardListRule = block.normal.list;
 const standardListInterrupt = other.listInterruptsParagraph;
 const standardListHr = other.hrRegex;
+const standardListHtml = other.htmlBeginRegex;
 const standardNestedMarkers = other.nestedBlockMarker;
 const standardContainerMarkers = other.nestedContainerMarkers;
 const standardDefRule = block.normal.def;
@@ -782,9 +783,71 @@ function firstTaskMarker(src: string): string | undefined {
   }
 }
 
+const htmlTagEdges: number[] = [];
+const htmlTagKinds: number[] = [0];
+for (const name of (_tag.replace('h[1-6]', 'h1|h2|h3|h4|h5|h6') + '|script|pre|style|textarea').split('|')) {
+  let state = 0;
+  for (let i = 0; i < name.length; i++) {
+    const index = state * 36 + htmlTagLetter(name.charCodeAt(i));
+    let next = htmlTagEdges[index];
+    if (!next) {
+      next = htmlTagKinds.length;
+      htmlTagEdges[index] = next;
+      htmlTagKinds.push(0);
+    }
+    state = next;
+  }
+  htmlTagKinds[state] = name === 'script' || name === 'pre' || name === 'style' || name === 'textarea' ? 2 : 1;
+}
+const htmlTagTransitions = Int16Array.from(htmlTagEdges);
+
 /** @hot */
-function startsListInterrupt(src: string, maxIndent: number, pedantic: boolean, containers: boolean): boolean {
-  let pos = skipSpaces(src, maxIndent);
+function htmlTagLetter(code: number): number {
+  const lower = code | 32;
+  if (lower >= 97 && lower <= 122) return lower - 97;
+  if (code >= 48 && code <= 57) return code - 22;
+  return -1;
+}
+
+/** @hotIgnore User adapter: at most one source line per replaced list rule test. */
+function testUserListRule(rule: RegExp, src: string, start: number, end: number): boolean {
+  return rule.test(sourceText(src, start, end));
+}
+
+/** @hot */
+function listHtmlBegins(src: string, first: number, end: number, indent: number): boolean {
+  let pos = first + skipSpacesAt(src, first, indent);
+  if (src.charCodeAt(pos++) !== 60) return false;
+  const firstCode = src.charCodeAt(pos);
+  if (firstCode === 63) return true;
+  if (firstCode === 33) {
+    const lower = src.charCodeAt(pos + 1) | 32;
+    return (lower >= 97 && lower <= 122) || src.startsWith('--', pos + 1)
+      || (src.charCodeAt(pos + 1) === 91 && (src.charCodeAt(pos + 2) | 32) === 99
+        && (src.charCodeAt(pos + 3) | 32) === 100 && (src.charCodeAt(pos + 4) | 32) === 97
+        && (src.charCodeAt(pos + 5) | 32) === 116 && (src.charCodeAt(pos + 6) | 32) === 97
+        && src.charCodeAt(pos + 7) === 91);
+  }
+  const closing = firstCode === 47;
+  if (closing) pos++;
+  let state = 0;
+  while (pos < end) {
+    const letter = htmlTagLetter(src.charCodeAt(pos));
+    if (letter < 0) break;
+    state = htmlTagTransitions[state * 36 + letter] || 0;
+    if (!state) return false;
+    pos++;
+  }
+  const kind = htmlTagKinds[state];
+  const tail = src.charCodeAt(pos);
+  if (kind === 2) return !closing && (pos === end || tail === 62 || isStringWhitespace(tail));
+  return kind === 1 && (pos === end || tail === 32 || tail === 9 || tail === 62
+    || (tail === 47 && src.charCodeAt(pos + 1) === 62));
+}
+
+/** @hot */
+function startsListInterrupt(src: string, maxIndent: number, pedantic: boolean, containers: boolean, startAt = 0, endAt = src.length): boolean {
+  let pos = startAt + skipSpacesAt(src, startAt, maxIndent);
   const marker = src.charCodeAt(pos);
   if (marker === 96 || marker === 126) {
     return src.charCodeAt(pos + 1) === marker && src.charCodeAt(pos + 2) === marker;
@@ -793,7 +856,7 @@ function startsListInterrupt(src: string, maxIndent: number, pedantic: boolean, 
     if (pedantic) return true;
     const start = pos;
     while (src.charCodeAt(pos) === 35 && pos - start < 7) pos++;
-    return pos - start <= 6 && (pos === src.length || isStringWhitespace(src.charCodeAt(pos)));
+    return pos - start <= 6 && (pos === endAt || isStringWhitespace(src.charCodeAt(pos)));
   }
   if (!containers) return false;
   if (marker === 62) return true;
@@ -804,7 +867,7 @@ function startsListInterrupt(src: string, maxIndent: number, pedantic: boolean, 
     if (pos === start || (code !== 46 && code !== 41)) return false;
   }
   const after = src.charCodeAt(++pos);
-  return pos === src.length || after === 9 || after === 10 || after === 32;
+  return pos === endAt || after === 9 || after === 10 || after === 32;
 }
 
 /** @hot */
@@ -883,6 +946,18 @@ function listLineText(src: string, start: number, end: number, column: number): 
 }
 
 /** @hot */
+function listLeadingWidth(src: string, start: number, end: number, column: number): number {
+  let width = column;
+  while (start < end) {
+    const code = src.charCodeAt(start++);
+    if (code === 32) width++;
+    else if (code === 9) width += 4 - (width & 3);
+    else break;
+  }
+  return width - column;
+}
+
+/** @hot */
 function appendListContent(src: string, start: number, end: number, column: number, drop: number, padding: number, segments: number[]) {
   let first = start;
   let width = column;
@@ -937,6 +1012,7 @@ function stripQuoteMarkers(src: string, start: number, end: number): string {
 
 /** @hotIgnore Output: one string for each contiguous container run. */
 function containerText(src: string, segments: number[]): string {
+  if (segments.length === 3 && segments[2] === 0) return sourceText(src, segments[0], segments[1]);
   let text = '';
   for (let i = 0; i < segments.length; i += 3) {
     const spaces = segments[i + 2];
@@ -1430,21 +1506,22 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         offset = Math.min(src.length, firstLineEnd + 1);
 
         const pedantic = !!this.options.pedantic;
-        let line = pedantic
-          ? expandTabs(sourceText(src, firstLineStart, firstLineEnd), bulletIndent)
-          : listLineText(src, firstLineStart, firstLineEnd, bulletIndent);
+        let line = pedantic ? expandTabs(sourceText(src, firstLineStart, firstLineEnd), bulletIndent) : undefined;
+        let previousStart = firstLineStart;
+        let previousEnd = firstLineEnd;
+        let previousColumn = bulletIndent;
         let lineIndent = 0;
-        const trimmedStart = trimStartOffset(line, 0, line.length);
-        let blankLine = trimmedStart === line.length;
+        const trimmedStart = line === undefined ? trimStartOffset(src, firstLineStart, firstLineEnd) : trimStartOffset(line, 0, line.length);
+        let blankLine = trimmedStart === (line?.length ?? firstLineEnd);
 
         let indent = 0;
         if (this.options.pedantic) {
           indent = 2;
-          itemContents = sourceText(line, trimmedStart, line.length);
+          itemContents = sourceText(line!, trimmedStart, line!.length);
         } else if (blankLine) {
           indent = bulletIndent + 1;
         } else {
-          indent = skipSpaces(line, line.length);
+          indent = listLeadingWidth(src, firstLineStart, firstLineEnd, bulletIndent);
           indent = indent > 4 ? 1 : indent; // Treat indented code blocks (> 4 spaces) as having only 1 indent
           appendListContent(src, firstLineStart, firstLineEnd, bulletIndent, indent, 0, segments);
           indent += bulletIndent;
@@ -1463,7 +1540,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         if (!endEarly) {
           const maxIndent = Math.max(0, Math.min(3, indent - 1));
           const hrRegex = this.rules.other.hrRegex === standardListHr ? undefined : this.rules.other.hrRegex(indent);
-          const htmlBeginRegex = this.rules.other.htmlBeginRegex(indent);
+          const htmlBeginRegex = this.rules.other.htmlBeginRegex === standardListHtml ? undefined : this.rules.other.htmlBeginRegex(indent);
 
           // A lazy line continues a paragraph, so it is not checked for the start of a block
           let lineIsLazy = false;
@@ -1471,30 +1548,28 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           // Check if following lines should be included in List Item
           while (offset < src.length) {
             const nextEnd = lineEnd(src, offset);
-            const rawLine = sourceText(src, offset, nextEnd);
-            // Pedantic parsing checks the line after realigning its indentation.
-            let nextLine = rawLine;
+            let nextLine: string | undefined;
             if (pedantic) {
+              const raw = sourceText(src, offset, nextEnd);
               nextLine = this.rules.other.listReplaceNesting === standardListNesting
-                ? pedanticListIndent(rawLine)
-                : rawLine.replace(this.rules.other.listReplaceNesting, '  ');
+                ? pedanticListIndent(raw)
+                : raw.replace(this.rules.other.listReplaceNesting, '  ');
             }
+            const nextSource = nextLine ?? src;
+            const nextStart = nextLine === undefined ? offset : 0;
+            const nextLimit = nextLine === undefined ? nextEnd : nextLine.length;
+            if (startsListInterrupt(nextSource, maxIndent, pedantic, true, nextStart, nextLimit)
+              || (htmlBeginRegex
+                ? testUserListRule(htmlBeginRegex, nextSource, nextStart, nextLimit)
+                : listHtmlBegins(nextSource, nextStart, nextLimit, maxIndent))) break;
 
-            if (startsListInterrupt(nextLine, maxIndent, pedantic, true) || htmlBeginRegex.test(nextLine)) {
-              break;
-            }
-
-            // Horizontal rule found
-            if (hrRegex ? hrRegex.test(nextLine) : listHasHr(nextLine, 0, maxIndent)) {
-              break;
-            }
-
-            const nextLineWithoutTabs = pedantic ? nextLine : listLineText(rawLine, 0, rawLine.length, 0);
-            const nextIsBlank = trimStartOffset(nextLine, 0, nextLine.length) === nextLine.length;
-            if (skipSpaces(nextLineWithoutTabs, nextLineWithoutTabs.length) >= indent || nextIsBlank) {
+            if (hrRegex ? testUserListRule(hrRegex, nextSource, nextStart, nextLimit) : listHasHr(nextSource, nextStart, maxIndent)) break;
+            const width = pedantic ? skipSpaces(nextLine!, nextLine!.length) : listLeadingWidth(src, offset, nextEnd, 0);
+            const nextIsBlank = trimStartOffset(nextSource, nextStart, nextLimit) === nextLimit;
+            if (width >= indent || nextIsBlank) {
               if (pedantic) {
                 itemContents += '\n';
-                itemContents += sourceText(nextLineWithoutTabs, indent, nextLineWithoutTabs.length);
+                itemContents += sourceText(nextLine!, indent, nextLine!.length);
               } else {
                 segments.push(offset - 1, offset, 0);
                 appendListContent(src, offset, nextEnd, 0, indent, 0, segments);
@@ -1510,7 +1585,8 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               // nested list item or block quote. Look past their markers to the
               // block a lazy line would continue. Tabs are left alone because
               // their width depends on the column they start at.
-              const previous = sourceText(line, lineIndent, line.length);
+              const previousLine = line ?? listLineText(src, previousStart, previousEnd, previousColumn);
+              const previous = sourceText(previousLine, lineIndent, previousLine.length);
               let lastBlock = previous;
               if (!this.options.pedantic && !hasContinuation && !previous.includes('\t')) {
                 let nested = 0;
@@ -1534,7 +1610,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               if (startsListInterrupt(lastBlock, maxIndent, pedantic, false)) {
                 break;
               }
-              if (htmlBeginRegex.test(lastBlock)) {
+              if (htmlBeginRegex ? htmlBeginRegex.test(lastBlock) : listHtmlBegins(lastBlock, 0, lastBlock.length, maxIndent)) {
                 break;
               }
               if (hrRegex ? hrRegex.test(lastBlock) : listHasHr(lastBlock, 0, maxIndent)) {
@@ -1569,16 +1645,16 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               // A lazy continuation can look like a setext underline after
               // list indentation is removed. Keep it in the paragraph.
               const setextContinuation = !this.options.pedantic
-                && setextUnderlineStart(nextLine, 0, true) >= 0
+                && setextUnderlineStart(src, offset, true) >= 0
                 && (this.rules.block.lheading === standardSetextRule || this.rules.block.lheading === gfmSetextRule
-                  ? setextTextEnd(`${previous}\n${nextLine}`, 0, this.rules.block.lheading === gfmSetextRule, false) >= 0
-                  : this.rules.block.lheading.test(`${previous}\n${nextLine}`));
+                  ? setextTextEnd(`${previous}\n${sourceText(src, offset, nextEnd)}`, 0, this.rules.block.lheading === gfmSetextRule, false) >= 0
+                  : this.rules.block.lheading.test(`${previous}\n${sourceText(src, offset, nextEnd)}`));
               if (pedantic) {
                 itemContents += '\n' + nextLine;
               } else {
                 segments.push(offset - 1, offset, 0);
                 if (setextContinuation) {
-                  appendListContent(src, offset, nextEnd, 0, skipSpaces(nextLineWithoutTabs, 3), 4, segments);
+                  appendListContent(src, offset, nextEnd, 0, Math.min(width, 3), 4, segments);
                 } else {
                   segments.push(offset, nextEnd, 0);
                 }
@@ -1588,8 +1664,11 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
             hasContinuation = true;
             blankLine = nextIsBlank;
+            previousStart = offset;
+            previousEnd = nextEnd;
+            previousColumn = 0;
             offset = Math.min(src.length, nextEnd + 1);
-            line = nextLineWithoutTabs;
+            line = pedantic ? nextLine : undefined;
             lineIndent = indent;
           }
         }
