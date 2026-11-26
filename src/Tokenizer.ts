@@ -645,7 +645,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         this.lexer.state.top = true;
         this.lexer.state.inBlockquote = true;
         if (typeof content === 'number' && contentEnd === contentSource.length && !this.options.pedantic) {
-          this.lexer.blockTokensAt(contentSource, content, tokens, true);
+          this.lexer.blockTokens(contentSource, tokens, true, content);
         } else {
           this.lexer.blockTokens(currentText, tokens, true);
         }
@@ -959,7 +959,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         this.lexer.state.top = false;
         queueStarts.push(this.lexer.inlineQueue.length);
         if (item === lastItem && finalSourceStart >= 0 && item.text.length === src.length - finalSourceStart) {
-          this.lexer.blockTokensAt(src, finalSourceStart, item.tokens, false);
+          this.lexer.blockTokens(src, item.tokens, false, finalSourceStart);
         } else {
           this.lexer.blockTokens(item.text, item.tokens);
         }

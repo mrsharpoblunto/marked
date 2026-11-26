@@ -256,14 +256,10 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    */
   blockTokens(src: string, tokens?: Token[], lastParagraphClipped?: boolean): Token[];
   blockTokens(src: string, tokens?: TokensList, lastParagraphClipped?: boolean): TokensList;
-  /** @hot */
-  blockTokens(src: string, tokens: Token[] = [], lastParagraphClipped = false) {
-    return this.blockTokensAt(src, 0, tokens, lastParagraphClipped);
-  }
-
   /** @internal */
+  blockTokens(src: string, tokens: Token[], lastParagraphClipped: boolean, offset: number): Token[];
   /** @hot */
-  blockTokensAt(src: string, offset: number, tokens: Token[], lastParagraphClipped: boolean): Token[] {
+  blockTokens(src: string, tokens: Token[] = [], lastParagraphClipped = false, offset = 0) {
     this.tokenizer.lexer = this;
     // list items and block quotes lex their contents with a nested call, so
     // restore the outer last token when it returns
