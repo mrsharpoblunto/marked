@@ -109,6 +109,8 @@ function clipForExtensions<P, R>(
   return startIndex < Infinity ? src.slice(0, offset + startIndex + 1) : src;
 }
 
+const knownLexers: (_Lexer<unknown, unknown> | undefined)[] = [];
+
 /**
  * Block Lexer
  */
@@ -144,6 +146,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   #blockMasks: number[] | undefined;
   #maskHook: ((src: string) => string) | undefined;
   #extensions: Pick<NonNullable<MarkedOptions['extensions']>, 'block' | 'inline' | 'startBlock' | 'startInline'> | null | undefined;
+
+  #runningKnown = false;
 
   constructor(options?: MarkedOptions<ParserOutput, RendererOutput>) {
     // TokenList cannot be created in one go
@@ -233,6 +237,39 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   static lexInline<ParserOutput = string, RendererOutput = string>(src: string, options?: MarkedOptions<ParserOutput, RendererOutput>) {
     const lexer = new _Lexer<ParserOutput, RendererOutput>(options);
     return lexer.inlineTokens(src);
+  }
+
+  /** @internal */
+  static lexKnown<P, R>(src: string, options: MarkedOptions<P, R>, blockMode: boolean): Token[] {
+    if (rulesExposed) return blockMode ? _Lexer.lex(src, options) : _Lexer.lexInline(src, options);
+    const mode = options.pedantic ? 4 : options.gfm ? (options.breaks ? 3 : 2) : 0;
+    let lexer = knownLexers[mode] as _Lexer<P, R> | undefined;
+    if (lexer && lexer.#runningKnown) return blockMode ? _Lexer.lex(src, options) : _Lexer.lexInline(src, options);
+    if (lexer) {
+      lexer.options = options;
+      options.tokenizer = lexer.tokenizer;
+      lexer.tokenizer.options = options;
+      lexer.tokens = [] as unknown as TokensList;
+      lexer.tokens.links = Object.create(null);
+      const state = lexer.state;
+      state.inLink = false;
+      state.inRawBlock = false;
+      state.linkEmitted = false;
+      state.linkParenPossible = true;
+      state.top = true;
+      state.inBlockquote = false;
+      state.lastToken = undefined;
+      lexer.inlineQueue.length = 0;
+    } else {
+      lexer = new _Lexer(options);
+      knownLexers[mode] = lexer as unknown as _Lexer<unknown, unknown>;
+    }
+    lexer.#runningKnown = true;
+    try {
+      return blockMode ? lexer.lex(src) : lexer.inlineTokens(src);
+    } finally {
+      lexer.#runningKnown = false;
+    }
   }
 
   /**

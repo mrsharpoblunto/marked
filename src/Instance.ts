@@ -355,7 +355,7 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
         return (async() => {
           const processedSrc = hooks ? await hooks.preprocess(src) : src;
           const lexer = hooks ? await hooks.provideLexer(blockType) : (blockType ? _Lexer.lex : _Lexer.lexInline);
-          const tokens = await lexer(processedSrc, opt);
+          const tokens = useKinds ? _Lexer.lexKnown(processedSrc, opt, blockType) : await lexer(processedSrc, opt);
           const processedTokens = hooks ? await hooks.processAllTokens(tokens) : tokens;
           if (opt.walkTokens) {
             await Promise.all(this.walkTokens(processedTokens, opt.walkTokens));
@@ -371,7 +371,7 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
           src = hooks.preprocess(src) as string;
         }
         const lexer = hooks ? hooks.provideLexer(blockType) : (blockType ? _Lexer.lex : _Lexer.lexInline);
-        let tokens = lexer(src, opt);
+        let tokens = useKinds ? _Lexer.lexKnown(src, opt, blockType) : lexer(src, opt);
         if (hooks) {
           tokens = hooks.processAllTokens(tokens);
         }

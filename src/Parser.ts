@@ -7,6 +7,8 @@ import type { OutputBuffer } from './OutputBuffer.ts';
 import type { Token, Tokens } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
 
+let knownParser: _Parser<unknown, unknown> | undefined;
+
 /**
  * Parsing & Compiling
  */
@@ -17,6 +19,8 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
   #slots: _Renderer<ParserOutput, RendererOutput>;
   #useKinds = false;
   #textSlots: _TextRenderer<RendererOutput> | undefined;
+
+  #runningKnown = false;
 
   constructor(options?: MarkedOptions<ParserOutput, RendererOutput>) {
     this.options = options || _defaults;
@@ -32,9 +36,24 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
 
   /** @internal */
   static parseKnown<P, R>(tokens: Token[], options: MarkedOptions<P, R>, block: boolean): P {
-    const parser = new _Parser(options);
+    let parser = knownParser as _Parser<P, R> | undefined;
+    if (parser && parser.#runningKnown) {
+      parser = new _Parser(options);
+    } else if (parser) {
+      parser.options = options;
+      options.renderer = parser.renderer;
+      parser.renderer.options = options;
+    } else {
+      parser = new _Parser(options);
+      knownParser = parser as unknown as _Parser<unknown, unknown>;
+    }
     parser.#useKinds = true;
-    return block ? parser.parse(tokens) : parser.parseInline(tokens);
+    parser.#runningKnown = true;
+    try {
+      return block ? parser.parse(tokens) : parser.parseInline(tokens);
+    } finally {
+      parser.#runningKnown = false;
+    }
   }
 
   /**
