@@ -1,4 +1,4 @@
-import { _Tokenizer } from './Tokenizer.ts';
+import { _Tokenizer, inlineTextAt } from './Tokenizer.ts';
 import { _defaults } from './defaults.ts';
 import { other, block, inline } from './rules.ts';
 import { beginEmStrongDelCloserScan, cachedLastPossibleDelCloserIndex, cachedLastPossibleEmStrongCloserIndex, endEmStrongDelCloserScan, normalizeLabel } from './helpers.ts';
@@ -456,14 +456,16 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   #tokenizeInlines(src: string, maskedSrc: string, tokens: Token[]): Token[] {
     let keepPrevChar = false;
     let prevChar = '';
-    let srcLength = Infinity;
-    while (src) {
-      if (src.length < srcLength) {
-        srcLength = src.length;
-      } else {
-        this.infiniteLoopError(src.charCodeAt(0));
+    let offset = 0;
+    let lastOffset = -1;
+    const maskOffset = maskedSrc.length - src.length;
+    while (offset < src.length) {
+      if (offset === lastOffset) {
+        this.infiniteLoopError(src.charCodeAt(offset));
         break;
       }
+      lastOffset = offset;
+      let remaining: string | undefined;
 
       if (!keepPrevChar) {
         prevChar = '';
@@ -477,8 +479,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       if (extensions?.length) {
         const count = extensions.length;
         for (let i = 0; i < count; i++) {
-          if (i in extensions && (token = extensions[i].call({ lexer: this }, src, tokens))) {
-            src = src.substring(token.raw.length);
+          if (i in extensions && (token = extensions[i].call({ lexer: this }, remaining ??= src.slice(offset), tokens))) {
+            offset += token.raw.length;
             tokens.push(token);
             break;
           }
@@ -486,12 +488,12 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         if (token) continue;
       }
 
-      const firstCode = src.charCodeAt(0);
+      const firstCode = src.charCodeAt(offset);
       // escape
       if ((firstCode === 92
         || this.tokenizer.escape !== _Tokenizer.prototype.escape)
-        && (token = this.tokenizer.escape(src))) {
-        src = src.substring(token.raw.length);
+        && (token = this.tokenizer.escape(remaining ??= src.slice(offset)))) {
+        offset += token.raw.length;
         tokens.push(token);
         continue;
       }
@@ -499,8 +501,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // tag
       if ((firstCode === 60
         || this.tokenizer.tag !== _Tokenizer.prototype.tag)
-        && (token = this.tokenizer.tag(src))) {
-        src = src.substring(token.raw.length);
+        && (token = this.tokenizer.tag(remaining ??= src.slice(offset)))) {
+        offset += token.raw.length;
         tokens.push(token);
         continue;
       }
@@ -508,8 +510,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // link
       if ((firstCode === 91 || firstCode === 33
         || this.tokenizer.link !== _Tokenizer.prototype.link)
-        && (token = this.tokenizer.link(src))) {
-        src = src.substring(token.raw.length);
+        && (token = this.tokenizer.link(remaining ??= src.slice(offset)))) {
+        offset += token.raw.length;
         tokens.push(token);
         continue;
       }
@@ -517,8 +519,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // reflink, nolink
       if ((firstCode === 91 || firstCode === 33
         || this.tokenizer.reflink !== _Tokenizer.prototype.reflink)
-        && (token = this.tokenizer.reflink(src, this.tokens.links))) {
-        src = src.substring(token.raw.length);
+        && (token = this.tokenizer.reflink(remaining ??= src.slice(offset), this.tokens.links))) {
+        offset += token.raw.length;
         const lastToken = tokens.at(-1);
         if (token.type === 'text' && lastToken?.type === 'text') {
           lastToken.raw += token.raw;
@@ -534,12 +536,12 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // and the outer loop walks the run char-by-char, giving O(n^2) time.
       // Consume the whole run as literal text in one step.
       if (firstCode === 42 || firstCode === 95) {
-        const pos = maskedSrc.length - src.length;
+        const pos = maskOffset + offset;
         const lastCloser = cachedLastPossibleEmStrongCloserIndex(this.tokenizer, maskedSrc, firstCode);
         if (lastCloser <= pos) {
-          let runEnd = 1;
+          let runEnd = offset + 1;
           while (runEnd < src.length && src.charCodeAt(runEnd) === firstCode) runEnd++;
-          const raw = src.substring(0, runEnd);
+          const raw = src.slice(offset, runEnd);
           const lastToken = tokens.at(-1);
           if (lastToken?.type === 'text' && !lastToken.escaped) {
             lastToken.raw += raw;
@@ -547,18 +549,18 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
           } else {
             tokens.push({ type: 'text', raw, text: raw, escaped: false } as Tokens.Text);
           }
-          src = src.substring(runEnd);
+          offset = runEnd;
           prevChar = raw[0];
           keepPrevChar = true;
           continue;
         }
       } else if (firstCode === 126) {
-        const pos = maskedSrc.length - src.length;
+        const pos = maskOffset + offset;
         const lastCloser = cachedLastPossibleDelCloserIndex(this.tokenizer, maskedSrc);
         if (lastCloser <= pos) {
-          let runEnd = 1;
+          let runEnd = offset + 1;
           while (runEnd < src.length && src.charCodeAt(runEnd) === 126 /* ~ */) runEnd++;
-          const raw = src.substring(0, runEnd);
+          const raw = src.slice(offset, runEnd);
           const lastToken = tokens.at(-1);
           if (lastToken?.type === 'text' && !lastToken.escaped) {
             lastToken.raw += raw;
@@ -566,7 +568,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
           } else {
             tokens.push({ type: 'text', raw, text: raw, escaped: false } as Tokens.Text);
           }
-          src = src.substring(runEnd);
+          offset = runEnd;
           prevChar = raw[0];
           keepPrevChar = true;
           continue;
@@ -576,8 +578,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // em & strong
       if ((firstCode === 42 || firstCode === 95
         || this.tokenizer.emStrong !== _Tokenizer.prototype.emStrong)
-        && (token = this.tokenizer.emStrong(src, maskedSrc, prevChar))) {
-        src = src.substring(token.raw.length);
+        && (token = this.tokenizer.emStrong(remaining ??= src.slice(offset), maskedSrc, prevChar))) {
+        offset += token.raw.length;
         tokens.push(token);
         continue;
       }
@@ -585,8 +587,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // code
       if ((firstCode === 96
         || this.tokenizer.codespan !== _Tokenizer.prototype.codespan)
-        && (token = this.tokenizer.codespan(src))) {
-        src = src.substring(token.raw.length);
+        && (token = this.tokenizer.codespan(remaining ??= src.slice(offset)))) {
+        offset += token.raw.length;
         tokens.push(token);
         continue;
       }
@@ -594,8 +596,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // br
       if ((firstCode === 32 || firstCode === 92 || firstCode === 10
         || this.tokenizer.br !== _Tokenizer.prototype.br)
-        && (token = this.tokenizer.br(src))) {
-        src = src.substring(token.raw.length);
+        && (token = this.tokenizer.br(remaining ??= src.slice(offset)))) {
+        offset += token.raw.length;
         tokens.push(token);
         continue;
       }
@@ -603,8 +605,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // del (gfm)
       if ((firstCode === 126
         || this.tokenizer.del !== _Tokenizer.prototype.del)
-        && (token = this.tokenizer.del(src, maskedSrc, prevChar))) {
-        src = src.substring(token.raw.length);
+        && (token = this.tokenizer.del(remaining ??= src.slice(offset), maskedSrc, prevChar))) {
+        offset += token.raw.length;
         tokens.push(token);
         continue;
       }
@@ -612,8 +614,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // autolink
       if ((firstCode === 60
         || this.tokenizer.autolink !== _Tokenizer.prototype.autolink)
-        && (token = this.tokenizer.autolink(src))) {
-        src = src.substring(token.raw.length);
+        && (token = this.tokenizer.autolink(remaining ??= src.slice(offset)))) {
+        offset += token.raw.length;
         tokens.push(token);
         continue;
       }
@@ -625,19 +627,19 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
             || (firstCode >= 48 && firstCode <= 57) || firstCode === 46 || firstCode === 95
             || firstCode === 43 || firstCode === 45))
           || this.tokenizer.url !== _Tokenizer.prototype.url)
-        && (token = this.tokenizer.url(src))) {
-        src = src.substring(token.raw.length);
+        && (token = this.tokenizer.url(remaining ??= src.slice(offset)))) {
+        offset += token.raw.length;
         tokens.push(token);
         continue;
       }
 
       // text
       // prevent inlineText consuming extensions by clipping 'src' to extension start
-      let cutSrc = src;
+      let cutSrc: string | undefined;
       const startExtensions = this.options.extensions?.startInline;
       if (startExtensions?.length) {
         let startIndex = Infinity;
-        const tempSrc = src.slice(1);
+        const tempSrc = src.slice(offset + 1);
         const count = startExtensions.length;
         for (let i = 0; i < count; i++) {
           if (!(i in startExtensions)) continue;
@@ -647,11 +649,13 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
           }
         }
         if (startIndex < Infinity && startIndex >= 0) {
-          cutSrc = src.substring(0, startIndex + 1);
+          cutSrc = src.slice(offset, offset + startIndex + 1);
         }
       }
-      if (token = this.tokenizer.inlineText(cutSrc)) {
-        src = src.substring(token.raw.length);
+      if (token = this.tokenizer.inlineText === _Tokenizer.prototype.inlineText
+        ? this.tokenizer[inlineTextAt](cutSrc ?? src, cutSrc === undefined ? offset : 0)
+        : this.tokenizer.inlineText(cutSrc ?? remaining ?? src.slice(offset))) {
+        offset += token.raw.length;
         const lastChar = token.raw.slice(-1);
         if (lastChar !== '_') { // Track prevChar before string of ____ started
           prevChar = lastChar;
@@ -667,10 +671,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         continue;
       }
 
-      if (src) {
-        this.infiniteLoopError(src.charCodeAt(0));
-        break;
-      }
+      this.infiniteLoopError(src.charCodeAt(offset));
+      break;
     }
 
     return tokens;

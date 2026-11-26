@@ -217,11 +217,11 @@ function lineEnd(src: string, start: number): number {
 }
 
 /** @hot */
-function commonMarkTextEnd(src: string): number {
-  if (src.length === 0) return 0;
+function commonMarkTextEnd(src: string, start: number): number {
+  if (start === src.length) return start;
 
-  let end = 1;
-  if (src.charCodeAt(0) === 96) {
+  let end = start + 1;
+  if (src.charCodeAt(start) === 96) {
     while (src.charCodeAt(end) === 96) end++;
   }
 
@@ -242,6 +242,11 @@ function commonMarkTextEnd(src: string): number {
   }
   return end;
 }
+
+export const inlineTextAt = Symbol('inlineTextAt');
+
+const gfmText = new RegExp(inline.gfm.text.source.slice(1), 'y');
+const breaksText = new RegExp(inline.breaks.text.source.slice(1), 'y');
 
 /**
  * Tokenizer
@@ -1422,14 +1427,23 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
   /** @hot */
   inlineText(src: string): Tokens.Text | undefined {
+    return this[inlineTextAt](src, 0);
+  }
+
+  /** @hot */
+  [inlineTextAt](src: string, start: number): Tokens.Text | undefined {
     const rule = this.rules.inline.text;
     let raw: string | undefined;
     if (rule === inline.normal.text) {
-      const end = commonMarkTextEnd(src);
-      if (end === 0) return;
-      raw = end === src.length ? src : src.slice(0, end);
+      const end = commonMarkTextEnd(src, start);
+      if (end === start) return;
+      raw = src.slice(start, end);
+    } else if (rule === inline.gfm.text || rule === inline.breaks.text) {
+      const sticky = rule === inline.gfm.text ? gfmText : breaksText;
+      sticky.lastIndex = start;
+      raw = sticky.exec(src)?.[0];
     } else {
-      raw = rule.exec(src)?.[0];
+      raw = rule.exec(src.slice(start))?.[0];
     }
     if (raw !== undefined) {
       const escaped = this.lexer.state.inRawBlock;
