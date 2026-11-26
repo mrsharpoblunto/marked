@@ -210,7 +210,9 @@ const htmlInterrupt = new RegExp(paragraphHtmlStart.source, 'y');
 const standardSetextRule = block.normal.lheading;
 const gfmSetextRule = block.gfm.lheading;
 const pedanticSetextRule = block.pedantic.lheading;
-const tableInterrupt = new RegExp(other.tableHeader.source.replace(/^\^/, ''), 'y');
+const standardTableHeader = other.tableHeader;
+const standardTableRule = block.gfm.table;
+const noTableRule = block.normal.table;
 
 /** @hot */
 function headingMarkerEnd(src: string, start: number, pedantic: boolean): number {
@@ -334,6 +336,74 @@ function setextTextEnd(src: string, start: number, gfm: boolean, pedantic: boole
 }
 
 /** @hot */
+function tableDelimiterEnd(src: string, start: number): number {
+  let pos = start;
+  while (pos - start < 3 && src.charCodeAt(pos) === 32) pos++;
+  if (src.charCodeAt(pos) === 124) {
+    while (src.charCodeAt(++pos) === 32) { /* skip spaces after the pipe */ }
+  }
+  for (;;) {
+    if (src.charCodeAt(pos) === 58) pos++;
+    const dash = pos;
+    while (src.charCodeAt(pos) === 45) pos++;
+    if (pos === dash) return -1;
+    if (src.charCodeAt(pos) === 58) pos++;
+    while (src.charCodeAt(pos) === 32) pos++;
+    if (src.charCodeAt(pos) !== 124) return pos === src.length || src.charCodeAt(pos) === 10 ? pos : -1;
+    while (src.charCodeAt(++pos) === 32) { /* skip spaces after the pipe */ }
+    if (pos === src.length || src.charCodeAt(pos) === 10) return pos;
+  }
+}
+
+/** @hot */
+function tableHeaderContent(src: string, start: number, end: number): number {
+  while (src.charCodeAt(start) === 32) start++;
+  if (start === end) return -1;
+  for (let i = start + 1; i < end; i++) {
+    const code = src.charCodeAt(i);
+    if (code === 13 || code === 0x2028 || code === 0x2029) return -1;
+  }
+  return start;
+}
+
+/** @hot */
+function tableBodyEnd(src: string, first: number): number {
+  let start = first;
+  while (start < src.length) {
+    let content = start;
+    while (src.charCodeAt(content) === 32) content++;
+    const marker = src.charCodeAt(content);
+    if (marker === 10) break;
+    const indent = blockIndentEnd(src, start);
+    if (indent !== start && indent < src.length && src.charCodeAt(indent) !== 10) break;
+    if (content - start < 4) {
+      if (marker === 62 || (marker === 35 && headingMarkerEnd(src, content, false) !== content)) break;
+      if ((marker === 45 || marker === 42 || marker === 95) && thematicBreakEnd(src, content) >= 0) break;
+      if (marker === 60) {
+        htmlInterrupt.lastIndex = start;
+        if (htmlInterrupt.test(src)) break;
+      }
+      if ((marker === 96 || marker === 126) && src.charCodeAt(content + 1) === marker && src.charCodeAt(content + 2) === marker) {
+        let tail = fenceMarkerEnd(src, content);
+        while (tail < src.length && src.charCodeAt(tail) !== 10 && src.charCodeAt(tail) !== 96) tail++;
+        if (marker === 126 || tail === src.length || src.charCodeAt(tail) === 10) break;
+      }
+      const bullet = firstListMarkerEnd(src, start);
+      const after = src.charCodeAt(start + bullet);
+      if (bullet && (marker === 45 || marker === 42 || marker === 43
+        || (marker === 49 && bullet - (content - start) === 2)) && (after === 32 || after === 9)) break;
+    }
+    const end = blockLineEnd(src, start);
+    for (let i = start; i < end; i++) {
+      const code = src.charCodeAt(i);
+      if (code === 13 || code === 0x2028 || code === 0x2029) return start;
+    }
+    start = Math.min(end + 1, src.length);
+  }
+  return start;
+}
+
+/** @hot */
 function paragraphEnd(src: string, offset: number, pedantic: boolean, gfm: boolean): number {
   let end = blockLineEnd(src, offset);
   while (end < src.length) {
@@ -384,8 +454,7 @@ function paragraphEnd(src: string, offset: number, pedantic: boolean, gfm: boole
       const next = blockContentStart(src, lineEnd + 1);
       const delimiter = src.charCodeAt(next);
       if (delimiter === 45 || delimiter === 58 || delimiter === 124) {
-        tableInterrupt.lastIndex = start;
-        if (tableInterrupt.test(src)) break;
+        if (tableDelimiterEnd(src, lineEnd + 1) >= 0 && tableHeaderContent(src, start, lineEnd) >= 0) break;
       }
     }
     end = lineEnd;
@@ -474,8 +543,8 @@ function isEscapedAt(src: string, offset: number): boolean {
 }
 
 /** @hot */
-function hasTableDelimiter(src: string): boolean {
-  for (let i = 0; i < src.length; i++) {
+function hasTableDelimiter(src: string, start = 0, end = src.length): boolean {
+  for (let i = start; i < end; i++) {
     const code = src.charCodeAt(i);
     if (code === 58 || code === 124) return true;
   }
@@ -483,10 +552,9 @@ function hasTableDelimiter(src: string): boolean {
 }
 
 /** @hotIgnore Output: one alignment array with one entry per column. */
-function tableAlignments(src: string): Tokens.Table['align'] {
+function tableAlignments(src: string, start = 0, end = src.length): Tokens.Table['align'] {
   const alignment: Tokens.Table['align'] = [];
-  let first = src.charCodeAt(0) === 124 ? 1 : 0;
-  let end = src.length;
+  let first = src.charCodeAt(start) === 124 ? start + 1 : start;
   while (src.charCodeAt(end - 1) === 32) end--;
   if (src.charCodeAt(end - 1) === 124) end--;
   for (let i = first; i <= end; i++) {
@@ -1328,6 +1396,42 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   /** @internal */
   /** @hot */
   tableAt(src: string, offset: number): Tokens.Table | undefined {
+    if (this.rules.block.table === noTableRule) return;
+    if (this.rules.block.table === standardTableRule && this.rules.other.tableHeader === standardTableHeader) {
+      const headerEnd = blockLineEnd(src, offset);
+      if (headerEnd === src.length) return;
+      const alignStart = headerEnd + 1;
+      const alignEnd = tableDelimiterEnd(src, alignStart);
+      if (alignEnd < 0 || !hasTableDelimiter(src, alignStart, alignEnd)) return;
+      const start = tableHeaderContent(src, offset, headerEnd);
+      if (start < 0) return;
+      const headers = splitCells(src, start, headerEnd, 0);
+      const aligns = tableAlignments(src, blockContentStart(src, alignStart), alignEnd);
+      if (headers.length !== aligns.length) return;
+      const bodyStart = Math.min(alignEnd + 1, src.length);
+      const bodyEnd = tableBodyEnd(src, bodyStart);
+      const raw = withoutTrailingNewlines(sourceText(src, offset, bodyEnd));
+      const table = createTable(raw, aligns);
+      for (let i = 0; i < headers.length; i++) {
+        table.header.push(createTableCell(headers[i], this.lexer.inline(headers[i]), true, aligns[i]));
+      }
+      let end = bodyEnd;
+      while (end > bodyStart && (src.charCodeAt(end - 1) === 32 || src.charCodeAt(end - 1) === 9)) end--;
+      end = src.charCodeAt(end - 1) === 10 ? end - 1 : bodyEnd;
+      if (trimStartOffset(src, bodyStart, bodyEnd) < bodyEnd) {
+        for (let line = bodyStart; line <= end;) {
+          const eol = Math.min(blockLineEnd(src, line), end);
+          const cells = splitCells(src, line, eol, headers.length);
+          const row: Tokens.TableCell[] = [];
+          for (let i = 0; i < cells.length; i++) {
+            row.push(createTableCell(cells[i], this.lexer.inline(cells[i]), false, aligns[i]));
+          }
+          table.rows.push(row);
+          line = eol + 1;
+        }
+      }
+      return table;
+    }
     let headers: string[] | undefined;
     let aligns: Tokens.Table['align'] | undefined;
     if (this.options.gfm && !this.options.pedantic) {
