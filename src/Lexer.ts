@@ -162,8 +162,17 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         continue;
       }
 
+      const firstCode = src.charCodeAt(0);
+      let marker = firstCode;
+      let indent = 0;
+      while (marker === 32 && indent < 4) {
+        marker = src.charCodeAt(++indent);
+      }
+
       // newline
-      if (token = this.tokenizer.space(src)) {
+      if ((firstCode === 10 || firstCode === 32 || firstCode === 9
+        || this.tokenizer.space !== _Tokenizer.prototype.space)
+        && (token = this.tokenizer.space(src))) {
         src = src.substring(token.raw.length);
         const lastToken = tokens.at(-1);
         if (token.raw.length === 1 && lastToken !== undefined) {
@@ -177,7 +186,9 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       }
 
       // code
-      if (token = this.tokenizer.code(src)) {
+      if ((indent === 4 || marker === 9
+        || this.tokenizer.code !== _Tokenizer.prototype.code)
+        && (token = this.tokenizer.code(src))) {
         src = src.substring(token.raw.length);
         const lastToken = tokens.at(-1);
         // An indented code block cannot interrupt a paragraph.
@@ -192,49 +203,63 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       }
 
       // fences
-      if (token = this.tokenizer.fences(src)) {
+      if ((marker === 96 || marker === 126
+        || this.tokenizer.fences !== _Tokenizer.prototype.fences)
+        && (token = this.tokenizer.fences(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
       }
 
       // heading
-      if (token = this.tokenizer.heading(src)) {
+      if ((marker === 35
+        || this.tokenizer.heading !== _Tokenizer.prototype.heading)
+        && (token = this.tokenizer.heading(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
       }
 
       // hr
-      if (token = this.tokenizer.hr(src)) {
+      if ((marker === 42 || marker === 45 || marker === 95
+        || this.tokenizer.hr !== _Tokenizer.prototype.hr)
+        && (token = this.tokenizer.hr(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
       }
 
       // blockquote
-      if (token = this.tokenizer.blockquote(src)) {
+      if ((marker === 62
+        || this.tokenizer.blockquote !== _Tokenizer.prototype.blockquote)
+        && (token = this.tokenizer.blockquote(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
       }
 
       // list
-      if (token = this.tokenizer.list(src)) {
+      if ((marker === 42 || marker === 43 || marker === 45 || (marker >= 48 && marker <= 57)
+        || this.tokenizer.list !== _Tokenizer.prototype.list)
+        && (token = this.tokenizer.list(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
       }
 
       // html
-      if (token = this.tokenizer.html(src)) {
+      if ((marker === 60 || (indent === 4 && this.options.pedantic)
+        || this.tokenizer.html !== _Tokenizer.prototype.html)
+        && (token = this.tokenizer.html(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
       }
 
       // def
-      if (token = this.tokenizer.def(src)) {
+      if ((marker === 91 || (indent === 4 && this.options.pedantic)
+        || this.tokenizer.def !== _Tokenizer.prototype.def)
+        && (token = this.tokenizer.def(src))) {
         src = src.substring(token.raw.length);
         const lastToken = tokens.at(-1);
         if (lastToken?.type === 'paragraph' || lastToken?.type === 'text') {
@@ -255,7 +280,9 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       }
 
       // table (gfm)
-      if (token = this.tokenizer.table(src)) {
+      if ((this.options.gfm && !this.options.pedantic
+        || this.tokenizer.table !== _Tokenizer.prototype.table)
+        && (token = this.tokenizer.table(src))) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
