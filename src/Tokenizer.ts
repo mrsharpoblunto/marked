@@ -21,6 +21,14 @@ import type { MarkedOptions } from './MarkedOptions.ts';
  * spans untouched: their content is literal, so a `\[` or `\]` inside a
  * code span is not an escape.
  */
+function countCodePoints(text: string) {
+  let count = 0;
+  for (let i = 0; i < text.length; i++, count++) {
+    if (text.codePointAt(i)! > 0xffff) i++;
+  }
+  return count;
+}
+
 function unescapeLinkLabel(label: string, rules: Rules): string {
   let result = '';
   for (let i = 0; i < label.length; i++) {
@@ -1045,7 +1053,10 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     while (!this.options.pedantic && runStart > 0 && maskedSrc[runStart - 1] === delimChar) {
       runStart--;
     }
-    const runPrevChar = [...maskedSrc.slice(Math.max(0, runStart - 2), runStart)].at(-1) ?? '';
+    const prevUnit = maskedSrc.charCodeAt(runStart - 1);
+    const prevWidth = prevUnit >= 0xdc00 && prevUnit <= 0xdfff
+      && maskedSrc.codePointAt(runStart - 2)! > 0xffff ? 2 : 1;
+    const runPrevChar = runStart > 0 ? maskedSrc.slice(runStart - prevWidth, runStart) : '';
     // The other delimiter character counts as punctuation here (`_**a*`, `*_#_`)
     const runPrevPunct = runPrevChar === '*' || runPrevChar === '_' || !!this.rules.inline.punctuation.exec(runPrevChar);
     if (runStart < srcStart) {
@@ -1061,8 +1072,8 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     const nextChar = match[1] || match[3] || '';
 
     if (!nextChar || !prevChar || prevPunct) {
-      // unicode Regex counts emoji as 1 char; spread into array for proper count (used multiple times below)
-      const lLength = [...match[0]].length - 1;
+      // The delimiter rules count Unicode code points.
+      const lLength = countCodePoints(match[0]) - 1;
       let rDelim, rLength, delimTotal = lLength, midDelimTotal = 0;
 
       // Rules 9-10 count the whole run, and also apply when the opener could
@@ -1086,7 +1097,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
         if (!rDelim) continue; // skip single * in __abc*abc__
 
-        rLength = [...rDelim].length;
+        rLength = countCodePoints(rDelim);
 
         if (match[3] || match[4]) { // found another Left Delim
           delimTotal += rLength;
@@ -1111,7 +1122,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         // Remove extra characters. *a*** -> *a*
         rLength = Math.min(rLength, rLength + delimTotal + midDelimTotal);
         // char length can be >1 for unicode characters;
-        const lastCharLength = [...match[0]][0].length;
+        const lastCharLength = match[0].codePointAt(0)! > 0xffff ? 2 : 1;
         const raw = src.slice(0, lLength + match.index + lastCharLength + rLength);
 
         // Create `em` if smallest delimiter has odd char count. *a***
@@ -1176,7 +1187,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
     if (!nextChar || !prevChar || this.rules.inline.punctuation.exec(prevChar)) {
       // unicode Regex counts emoji as 1 char; spread into array for proper count
-      const lLength = [...match[0]].length - 1;
+      const lLength = countCodePoints(match[0]) - 1;
       let rDelim, rLength, delimTotal = lLength;
 
       const endReg = this.rules.inline.delRDelim;
@@ -1194,7 +1205,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
         if (!rDelim) continue;
 
-        rLength = [...rDelim].length;
+        rLength = countCodePoints(rDelim);
 
         if (rLength !== lLength) continue;
 
@@ -1210,7 +1221,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         // Remove extra characters
         rLength = Math.min(rLength, rLength + delimTotal);
         // char length can be >1 for unicode characters
-        const lastCharLength = [...match[0]][0].length;
+        const lastCharLength = match[0].codePointAt(0)! > 0xffff ? 2 : 1;
         const raw = src.slice(0, lLength + match.index + lastCharLength + rLength);
 
         // Create del token - only single ~ or double ~~ supported
