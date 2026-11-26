@@ -898,6 +898,16 @@ function appendListContent(src: string, start: number, end: number, column: numb
 }
 
 /** @hot */
+function isPlainLazyLine(src: string, first: number, end: number): boolean {
+  if (first === end || ((src.charCodeAt(first) | 32) < 97) || ((src.charCodeAt(first) | 32) > 122)) return false;
+  for (let i = first + 1; i < end; i++) {
+    const code = src.charCodeAt(i) | 32;
+    if (code !== 32 && (code < 97 || code > 122)) return false;
+  }
+  return true;
+}
+
+/** @hot */
 function quoteMarkerAt(src: string, start: number): number {
   let marker = start;
   while (marker < start + 3 && src.charCodeAt(marker) === 32) marker++;
@@ -1259,6 +1269,25 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         } else if (kind === TokenKind.Blockquote) {
           // include continuation in nested blockquote
           const oldToken = lastToken as Tokens.Blockquote;
+          // Only a plain final lazy line can extend this paragraph without
+          // changing the block decision that produced it.
+          if (this.lexer.canResumeContainer() && oldToken.tokens.length === 1
+            && oldToken.raw.charCodeAt(0) === 62 && oldToken.raw.charCodeAt(1) === 32
+            && isPlainLazyLine(oldToken.raw, 2, oldToken.raw.length) && isPlainLazyLine(src, position, quoteEnd)) {
+            const child = oldToken.tokens[0] as Tokens.Paragraph;
+            const queued = this.lexer.inlineQueue.at(-1);
+            if (child.kind === TokenKind.Paragraph && queued?.tokens === child.tokens
+              && child.raw === oldToken.text && child.text === oldToken.text) {
+              const suffix = sourceText(src, position - 1, quoteEnd);
+              oldToken.raw += suffix;
+              oldToken.text += suffix;
+              child.raw = child.text = queued.src = oldToken.text;
+              text += suffix;
+              rawEnd = quoteEnd;
+              break;
+            }
+          }
+
           // The continuation lines belong to the same nesting frame as the
           // nested blockquote, which already had one '>' marker stripped, so
           // strip one marker from them too. Otherwise a restated marker after a
