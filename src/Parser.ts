@@ -16,7 +16,6 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
   textRenderer: _TextRenderer<RendererOutput>;
   #slots: _Renderer<ParserOutput, RendererOutput>;
   #useKinds = false;
-  #knownOutput: OutputBuffer | undefined;
   #textSlots: _TextRenderer<RendererOutput> | undefined;
 
   constructor(options?: MarkedOptions<ParserOutput, RendererOutput>) {
@@ -32,17 +31,10 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @internal */
-  parseKnown(tokens: Token[], block: boolean): ParserOutput {
-    const output = this.#knownOutput ??= { html: '' };
-    this.#useKinds = true;
-    this.#textSlots = undefined;
-    try {
-      if (block) this.renderBlocks(tokens, output);
-      else this.renderInlines(tokens, output);
-      return output.html as ParserOutput;
-    } finally {
-      output.html = '';
-    }
+  static parseKnown<P, R>(tokens: Token[], options: MarkedOptions<P, R>, block: boolean): P {
+    const parser = new _Parser(options);
+    parser.#useKinds = true;
+    return block ? parser.parse(tokens) : parser.parseInline(tokens);
   }
 
   /**
