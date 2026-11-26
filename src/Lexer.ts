@@ -1,6 +1,7 @@
 import { _Tokenizer } from './Tokenizer.ts';
 import { _defaults } from './defaults.ts';
 import { other, block, inline } from './rules.ts';
+import { callMaskHook, hookSlots } from './HookDispatch.ts';
 import { beginEmStrongDelCloserScan, cachedLastPossibleDelCloserIndex, cachedLastPossibleEmStrongCloserIndex, endEmStrongDelCloserScan, execAt, normalizeLabel, sourceText } from './helpers.ts';
 import type { Token, TokensList, Tokens } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
@@ -132,6 +133,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
 
   #slots: _Tokenizer<ParserOutput, RendererOutput>;
   #replaced = 0;
+  #maskHook: ((src: string) => string) | undefined;
   #extensions: Pick<NonNullable<MarkedOptions['extensions']>, 'block' | 'inline' | 'startBlock' | 'startInline'> | null | undefined;
 
   constructor(options?: MarkedOptions<ParserOutput, RendererOutput>) {
@@ -150,6 +152,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       this.#replaced = dispatch.replaced;
     }
     this.#extensions = this.options.extensions;
+    this.#maskHook = this.options.hooks ? hookSlots(this.options.hooks).emStrongMask : undefined;
     this.tokenizer.options = this.options;
     this.tokenizer.lexer = this;
     this.inlineQueue = [];
@@ -520,7 +523,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     // tokenizer or an emStrongMask hook may read it.
     const hasDelimiter = src.includes('*') || src.includes('_') || src.includes('~');
     const maskedSrc = hasDelimiter
-      || this.options.hooks?.emStrongMask
+      || this.#maskHook
       || (this.#replaced & tokenizerFlags.emStrong)
       || (this.#replaced & tokenizerFlags.del)
       ? this.#maskSrc(src)
@@ -832,7 +835,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     maskedSrc = this.#maskBlocks(maskedSrc);
 
     // Mask out blocks from extensions
-    maskedSrc = this.options.hooks?.emStrongMask?.call({ lexer: this }, maskedSrc) ?? maskedSrc;
+    if (this.#maskHook) maskedSrc = callMaskHook(this.#maskHook, this, maskedSrc);
 
     return maskedSrc;
   }

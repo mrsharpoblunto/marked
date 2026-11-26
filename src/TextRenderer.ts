@@ -128,12 +128,12 @@ export class _TextRenderer<RendererOutput = string> {
 
   br(): RendererOutput {
     const output = { html: '' };
-    emit(output, '\n');
+    this.brAt(undefined, output);
     return output.html as RendererOutput;
   }
 
   /** @internal */
-  brAt(_token: Tokens.Br, output: OutputBuffer): void {
+  brAt(_token: Tokens.Br | undefined, output: OutputBuffer): void {
     emit(output, '\n');
   }
 

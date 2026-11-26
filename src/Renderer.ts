@@ -184,11 +184,12 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
   /** @internal */
   /** @hot */
   listAt(token: Tokens.List, output: OutputBuffer): void {
-    if (token.ordered) {
+    const { ordered, start } = token;
+    if (ordered) {
       emit(output, '<ol');
-      if (token.start !== 1) {
+      if (start !== 1) {
         emit(output, ' start="');
-        emit(output, token.start);
+        emit(output, start);
         emit(output, '"');
       }
       emit(output, '>\n');
@@ -198,7 +199,7 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
     for (let i = 0; i < token.items.length; i++) {
       this.listitemAt(token.items[i], output);
     }
-    emit(output, token.ordered ? '</ol>\n' : '</ul>\n');
+    emit(output, ordered ? '</ol>\n' : '</ul>\n');
   }
 
   listitem(item: Tokens.ListItem): RendererOutput {
