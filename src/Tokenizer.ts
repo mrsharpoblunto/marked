@@ -30,7 +30,6 @@ function countCodePoints(text: string) {
  * spans untouched: their content is literal, so a `\[` or `\]` inside a
  * code span is not an escape.
  */
-/** @hotIgnore Scans the label and builds the unescaped text. */
 function unescapeLinkLabel(label: string, rules: Rules): string {
   let result = '';
   for (let i = 0; i < label.length; i++) {
@@ -57,7 +56,6 @@ function outputLink(cap: string[], link: Pick<Tokens.Link, 'href' | 'title'>, ra
   const href = link.href;
   const title = link.title || null;
   const text = unescapeLinkLabel(cap[1], rules);
-  // hot-path: allow This check reads the Markdown or HTML syntax as text.
   const isImage = cap[0].charAt(0) === '!';
 
   const outerInLink = lexer.state.inLink;
@@ -83,7 +81,6 @@ function outputLink(cap: string[], link: Pick<Tokens.Link, 'href' | 'title'>, ra
     lexer.state.linkEmitted = true;
   }
 
-  // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
   return {
     type: isImage ? 'image' : 'link',
     raw,
@@ -133,7 +130,6 @@ function indentCodeCompensation(raw: string, text: string, rules: Rules, canExpa
     .join('\n');
 }
 
-/** @hotIgnore Scans the label for inline syntax to find the token boundary. */
 function isLabelEndInsideToken(src: string, label: string, labelStart: number, rules: Rules) {
   if (!label.includes('<')) {
     return false;
@@ -899,7 +895,6 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (src.charCodeAt(0) !== 92) return; // \\
     const cap = this.rules.inline.escape.exec(src);
     if (cap) {
-      // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
       return {
         type: 'escape',
         raw: cap[0],
@@ -913,22 +908,17 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (src.charCodeAt(0) !== 60) return; // <
     const cap = this.rules.inline.tag.exec(src);
     if (cap) {
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       if (!this.lexer.state.inLink && this.rules.other.startATag.test(cap[0])) {
         this.lexer.state.inLink = true;
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       } else if (this.lexer.state.inLink && this.rules.other.endATag.test(cap[0])) {
         this.lexer.state.inLink = false;
       }
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       if (!this.lexer.state.inRawBlock && this.rules.other.startPreScriptTag.test(cap[0])) {
         this.lexer.state.inRawBlock = true;
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       } else if (this.lexer.state.inRawBlock && this.rules.other.endPreScriptTag.test(cap[0])) {
         this.lexer.state.inRawBlock = false;
       }
 
-      // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
       return {
         type: 'html',
         raw: cap[0],
@@ -955,24 +945,19 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (first !== 91 && first !== 33) return; // [ or !
     const cap = this.rules.inline.link.exec(src);
     if (cap) {
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       const labelStart = cap[0].charAt(0) === '!' ? 2 : 1;
       if (!this.options.pedantic && isLabelEndInsideToken(src, cap[1], labelStart, this.rules)) {
         return;
       }
 
-      // hot-path: allow This string operation computes the Markdown text used by the next rule.
       const trimmedUrl = cap[2].trim();
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       if (!this.options.pedantic && this.rules.other.startAngleBracket.test(trimmedUrl)) {
         // commonmark requires matching angle brackets
-        // hot-path: allow This check reads the Markdown or HTML syntax as text.
         if (!(this.rules.other.endAngleBracket.test(trimmedUrl))) {
           return;
         }
 
         // ending angle bracket cannot be escaped
-        // hot-path: allow This string operation computes the Markdown text used by the next rule.
         const rtrimSlash = rtrim(trimmedUrl.slice(0, -1), '\\');
         if ((trimmedUrl.length - rtrimSlash.length) % 2 === 0) {
           return;
@@ -986,18 +971,15 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         }
 
         if (lastParenIndex > -1) {
-          // hot-path: allow This check reads the Markdown or HTML syntax as text.
           const start = cap[0].indexOf('!') === 0 ? 5 : 4;
           const linkLen = start + cap[1].length + lastParenIndex;
           cap[2] = cap[2].substring(0, lastParenIndex);
-          // hot-path: allow This string operation computes the Markdown text used by the next rule.
           cap[0] = cap[0].substring(0, linkLen).trim();
           cap[3] = '';
         }
       }
       // The ')' that ends the match is the link closer only when it is not
       // escaped. `[foo](/url\)` has no closer; that paren is destination text.
-      // hot-path: allow This string operation computes the Markdown text used by the next rule.
       const unescaped = rtrim(cap[0].slice(0, -1), '\\');
       if ((cap[0].length - unescaped.length) % 2 === 0) {
         return;
@@ -1013,29 +995,20 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           title = link[3];
         }
       } else {
-        // hot-path: allow This string operation computes the Markdown text used by the next rule.
         title = cap[3] ? cap[3].slice(1, -1) : '';
       }
 
-      // hot-path: allow This string operation computes the Markdown text used by the next rule.
       href = href.trim();
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       if (this.rules.other.startAngleBracket.test(href)) {
-        // hot-path: allow This check reads the Markdown or HTML syntax as text.
         if (this.options.pedantic && !(this.rules.other.endAngleBracket.test(trimmedUrl))) {
           // pedantic allows starting angle bracket without ending angle bracket
-          // hot-path: allow This string operation computes the Markdown text used by the next rule.
           href = href.slice(1);
         } else {
-          // hot-path: allow This string operation computes the Markdown text used by the next rule.
           href = href.slice(1, -1);
         }
       }
-      // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
       return outputLink(cap, {
-        // hot-path: allow Replacement normalizes Markdown text or escapes HTML.
         href: href ? href.replace(this.rules.inline.anyPunctuation, '$1') : href,
-        // hot-path: allow Replacement normalizes Markdown text or escapes HTML.
         title: title ? title.replace(this.rules.inline.anyPunctuation, '$1') : title,
       }, cap[0], this.lexer, this.rules);
     }
@@ -1048,17 +1021,14 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     let cap;
     if ((cap = this.rules.inline.reflink.exec(src))
       || (cap = this.rules.inline.nolink.exec(src))) {
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       const labelStart = cap[0].charAt(0) === '!' ? 2 : 1;
       if (!this.options.pedantic && isLabelEndInsideToken(src, cap[1], labelStart, this.rules)) {
         return;
       }
 
-      // hot-path: allow Link definitions use normalized Markdown labels as keys.
       const link = links[normalizeLabel(cap[2] || cap[1])];
       if (!link) {
         const text = cap[0].charAt(0);
-        // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
         return {
           type: 'text',
           raw: text,
@@ -1079,7 +1049,6 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     // A mid-run opener (for example the second star of an unmatched `**`) must
     // only pair with a delimiter that can only close, otherwise it steals the
     // opener of a later span (`**a*b*c` must be `**a<em>b</em>c`).
-    // hot-path: allow This check reads the Markdown or HTML syntax as text.
     const midRun = prevChar === delimChar;
 
     // The start of this delimiter run may already be behind src, either taken
@@ -1088,28 +1057,23 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     // Pedantic follows markdown.pl, which has no such rules.
     const srcStart = maskedSrc.length - src.length;
     let runStart = srcStart;
-    // hot-path: allow The inline mask preserves source offsets for delimiter matching.
     while (!this.options.pedantic && runStart > 0 && maskedSrc[runStart - 1] === delimChar) {
       runStart--;
     }
     const prevUnit = maskedSrc.charCodeAt(runStart - 1);
     const prevWidth = prevUnit >= 0xdc00 && prevUnit <= 0xdfff
       && maskedSrc.codePointAt(runStart - 2)! > 0xffff ? 2 : 1;
-    // hot-path: allow The inline mask preserves source offsets for delimiter matching.
     const runPrevChar = runStart > 0 ? maskedSrc.slice(runStart - prevWidth, runStart) : '';
     // The other delimiter character counts as punctuation here (`_**a*`, `*_#_`)
-    // hot-path: allow The tokenizer uses the regex match and its captures to apply Markdown rules.
     const runPrevPunct = runPrevChar === '*' || runPrevChar === '_' || !!this.rules.inline.punctuation.exec(runPrevChar);
     if (runStart < srcStart) {
       prevChar = runPrevChar;
     }
     const prevPunct = runStart < srcStart
       ? runPrevPunct
-      // hot-path: allow The tokenizer uses the regex match and its captures to apply Markdown rules.
       : prevChar === '*' || prevChar === '_' || !!this.rules.inline.punctuation.exec(prevChar);
 
     // _ can't be between two alphanumerics. \p{L}\p{N} includes non-english alphabet/numbers as well
-    // hot-path: allow The tokenizer uses the regex match and its captures to apply Markdown rules.
     if (match[4] && prevChar.match(this.rules.other.unicodeAlphaNumeric)) return;
 
     const nextChar = match[1] || match[3] || '';
@@ -1122,19 +1086,14 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       // Rules 9-10 count the whole run, and also apply when the opener could
       // close as well (`a*b**`, where `*` is both left- and right-flanking).
       const runLength = srcStart - runStart + lLength;
-      // hot-path: allow This string operation computes the Markdown text used by the next rule.
       const openerCanClose = !this.options.pedantic && !!runPrevChar.trim()
-        // hot-path: allow This check reads the Markdown or HTML syntax as text.
         && (!!nextChar || (delimChar === '*' && !runPrevPunct));
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       if (delimChar !== '*' && delimChar !== '_') return;
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       const endReg = delimChar === '*' ? this.rules.inline.emStrongRDelimAst : this.rules.inline.emStrongRDelimUnd;
       const lastPossibleEmStrongCloserIndex = cachedLastPossibleEmStrongCloserIndex(this, maskedSrc, delimChar);
       const emStrongCloserWindowStart = maskedSrc.length - src.length + lLength;
       if (lastPossibleEmStrongCloserIndex < emStrongCloserWindowStart) return;
       // Clip maskedSrc to same section of string as src (move to lexer?)
-      // hot-path: allow The inline mask preserves source offsets for delimiter matching.
       maskedSrc = maskedSrc.slice(-1 * src.length + lLength);
       const lastPossibleEmStrongCloserIndexInWindow = lastPossibleEmStrongCloserIndex - emStrongCloserWindowStart;
       endReg.lastIndex = 0;
@@ -1171,14 +1130,11 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         rLength = Math.min(rLength, rLength + delimTotal + midDelimTotal);
         // char length can be >1 for unicode characters;
         const lastCharLength = match[0].codePointAt(0)! > 0xffff ? 2 : 1;
-        // hot-path: allow The tokenizer uses the regex match and its captures to apply Markdown rules.
         const raw = src.slice(0, lLength + match.index + lastCharLength + rLength);
 
         // Create `em` if smallest delimiter has odd char count. *a***
         if (Math.min(lLength, rLength) % 2) {
-          // hot-path: allow This string operation computes the Markdown text used by the next rule.
           const text = raw.slice(1, -1);
-          // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
           return {
             type: 'em',
             raw,
@@ -1188,9 +1144,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         }
 
         // Create 'strong' if smallest delimiter has even char count. **a***
-        // hot-path: allow This string operation computes the Markdown text used by the next rule.
         const text = raw.slice(2, -2);
-        // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
         return {
           type: 'strong',
           raw,
@@ -1206,16 +1160,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (src.charCodeAt(0) !== 96) return; // `
     const cap = this.rules.inline.code.exec(src);
     if (cap) {
-      // hot-path: allow Replacement normalizes Markdown text or escapes HTML.
       let text = cap[2].replace(this.rules.other.newLineCharGlobal, ' ');
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       const hasNonSpaceChars = this.rules.other.nonSpaceChar.test(text);
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       const hasSpaceCharsOnBothEnds = this.rules.other.startingSpaceChar.test(text) && this.rules.other.endingSpaceChar.test(text);
       if (hasNonSpaceChars && hasSpaceCharsOnBothEnds) {
         text = text.substring(1, text.length - 1);
       }
-      // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
       return {
         type: 'codespan',
         raw: cap[0],
@@ -1230,7 +1180,6 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (first !== 32 && first !== 92 && first !== 10) return; // space, \\ or newline (breaks)
     const cap = this.rules.inline.br.exec(src);
     if (cap) {
-      // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
       return {
         type: 'br',
         raw: cap[0],
@@ -1256,7 +1205,6 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       const delCloserWindowStart = maskedSrc.length - src.length + lLength;
       if (lastPossibleDelCloserIndex < delCloserWindowStart) return;
       // Clip maskedSrc to same section of string as src
-      // hot-path: allow The inline mask preserves source offsets for delimiter matching.
       maskedSrc = maskedSrc.slice(-1 * src.length + lLength);
       const lastPossibleDelCloserIndexInWindow = lastPossibleDelCloserIndex - delCloserWindowStart;
       endReg.lastIndex = 0;
@@ -1284,13 +1232,10 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         rLength = Math.min(rLength, rLength + delimTotal);
         // char length can be >1 for unicode characters
         const lastCharLength = match[0].codePointAt(0)! > 0xffff ? 2 : 1;
-        // hot-path: allow The tokenizer uses the regex match and its captures to apply Markdown rules.
         const raw = src.slice(0, lLength + match.index + lastCharLength + rLength);
 
         // Create del token - only single ~ or double ~~ supported
-        // hot-path: allow This string operation computes the Markdown text used by the next rule.
         const text = raw.slice(lLength, -lLength);
-        // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
         return {
           type: 'del',
           raw,
@@ -1307,26 +1252,21 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     const cap = this.rules.inline.autolink.exec(src);
     if (cap) {
       let text, href;
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       if (cap[2] === '@') {
         text = cap[1];
-        // hot-path: allow The lexer keeps the raw Markdown and the token text.
         href = 'mailto:' + text;
       } else {
         text = cap[1];
         href = text;
       }
 
-      // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
       return {
         type: 'link',
         raw: cap[0],
         text,
         href,
         autolink: true,
-        // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
         tokens: [
-          // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
           {
             type: 'text',
             raw: text,
@@ -1342,39 +1282,30 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     let cap;
     if (cap = this.rules.inline.url.exec(src)) {
       let text, href;
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       if (cap[2] === '@') {
         text = cap[0];
-        // hot-path: allow The lexer keeps the raw Markdown and the token text.
         href = 'mailto:' + text;
       } else {
         // do extended autolink path validation
         let prevCapZero;
         do {
           prevCapZero = cap[0];
-          // hot-path: allow RegExp returns an array. Index zero is the full match.
           cap[0] = this.rules.inline._backpedal.exec(cap[0])?.[0] ?? '';
-        // hot-path: allow This check reads the Markdown or HTML syntax as text.
         } while (prevCapZero !== cap[0]);
         text = cap[0];
-        // hot-path: allow This check reads the Markdown or HTML syntax as text.
         if (cap[1] === 'www.') {
-          // hot-path: allow The lexer keeps the raw Markdown and the token text.
           href = 'http://' + cap[0];
         } else {
           href = cap[0];
         }
       }
-      // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
       return {
         type: 'link',
         raw: cap[0],
         text,
         href,
         autolink: true,
-        // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
         tokens: [
-          // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
           {
             type: 'text',
             raw: text,
@@ -1390,7 +1321,6 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     const cap = this.rules.inline.text.exec(src);
     if (cap) {
       const escaped = this.lexer.state.inRawBlock;
-      // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
       return {
         type: 'text',
         raw: cap[0],

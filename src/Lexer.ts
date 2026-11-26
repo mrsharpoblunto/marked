@@ -87,7 +87,6 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    */
   /** @hot */
   static lex<ParserOutput = string, RendererOutput = string>(src: string, options?: MarkedOptions<ParserOutput, RendererOutput>) {
-    // hot-path: allow Each public call needs its own instance for options and recursive calls.
     const lexer = new _Lexer<ParserOutput, RendererOutput>(options);
     return lexer.lex(src);
   }
@@ -97,7 +96,6 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    */
   /** @hot */
   static lexInline<ParserOutput = string, RendererOutput = string>(src: string, options?: MarkedOptions<ParserOutput, RendererOutput>) {
-    // hot-path: allow Each public call needs its own instance for options and recursive calls.
     const lexer = new _Lexer<ParserOutput, RendererOutput>(options);
     return lexer.inlineTokens(src);
   }
@@ -107,7 +105,6 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    */
   /** @hot */
   lex(src: string) {
-    // hot-path: allow Replacement normalizes Markdown text or escapes HTML.
     src = src.replace(other.carriageReturn, '\n');
 
     this.blockTokens(src, this.tokens);
@@ -120,7 +117,6 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       this.state.inRawBlock = false;
       this.inlineTokens(next.src, next.tokens);
     }
-    // hot-path: allow Release the queued sources after the lexer processes them.
     this.inlineQueue = [];
 
     return this.tokens;
@@ -346,33 +342,26 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    */
   /** @hot */
   private linkInText(text: string): boolean {
-    // hot-path: allow This check reads the Markdown or HTML syntax as text.
     if (!text.includes('[')) {
       return false;
     }
 
     const linkRule = this.tokenizer.rules.inline.link;
-    // hot-path: allow matchAll keeps its own regex state while link detection can recurse.
     for (const match of text.matchAll(this.tokenizer.rules.inline.blockSkip)) {
       // blockSkip also matches code spans and html, and the `!` of an image is
       // left out of the match, so read the character before it.
-      // hot-path: allow The tokenizer uses the regex match and its captures to apply Markdown rules.
       if (linkRule.test(match[0]) && text.charAt(match.index - 1) !== '!') {
         return true;
       }
     }
 
-    // hot-path: allow matchAll keeps its own regex state while link detection can recurse.
     for (const match of text.matchAll(this.tokenizer.rules.inline.reflinkSearch)) {
       const match0 = match[0];
-      // hot-path: allow The tokenizer uses the regex match and its captures to apply Markdown rules.
       const refStart = match0.lastIndexOf('[');
-      // hot-path: allow Link definitions use normalized Markdown labels as keys.
       if (match0.charAt(0) === '!' || !Object.hasOwn(this.tokens.links, normalizeLabel(match0.slice(refStart + 1, -1)))) {
         continue;
       }
       // a candidate holding a link is not a link either, so it does not count
-      // hot-path: allow The tokenizer uses the regex match and its captures to apply Markdown rules.
       if (refStart > 1 && this.linkInText(match0.slice(1, refStart - 1))) {
         continue;
       }
@@ -386,7 +375,6 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    * Lexing/Compiling
    */
   /** @hot */
-  // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
   inlineTokens(src: string, tokens: Token[] = []): Token[] {
     this.tokenizer.lexer = this;
     // One paren scan per inline run, shared with Tokenizer.link: without a
@@ -395,7 +383,6 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     // `'[a](b'.repeat(n)`. Extension tokenizers can pass generated text to
     // nested runs, so each run must check its own source.
     const prevLinkParenPossible = this.state.linkParenPossible;
-    // hot-path: allow This check reads the Markdown or HTML syntax as text.
     this.state.linkParenPossible = src.includes(')');
     try {
       return this.#inlineTokensInner(src, tokens);
@@ -410,7 +397,6 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     // The masked source is only read by emStrong and del, which need a *, _ or
     // ~ to start. Skip building it for a run without one, unless a custom
     // tokenizer or an emStrongMask hook may read it.
-    // hot-path: allow This check reads the Markdown or HTML syntax as text.
     const hasDelimiter = src.includes('*') || src.includes('_') || src.includes('~');
     const maskedSrc = hasDelimiter
       || this.options.hooks?.emStrongMask
@@ -456,9 +442,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       let token: Tokens.Generic | undefined;
 
       // extensions
-      // hot-path: allow Extensions use the public token names and callback context.
       if (this.options.extensions?.inline?.some((extTokenizer) => {
-        // hot-path: allow Extensions use the public token names and callback context.
         if (token = extTokenizer.call({ lexer: this }, src, tokens)) {
           src = src.substring(token.raw.length);
           tokens.push(token);
@@ -494,9 +478,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       if (token = this.tokenizer.reflink(src, this.tokens.links)) {
         src = src.substring(token.raw.length);
         const lastToken = tokens.at(-1);
-        // hot-path: allow Public token types are strings.
         if (token.type === 'text' && lastToken?.type === 'text') {
-          // hot-path: allow The lexer keeps the raw Markdown and the token text.
           lastToken.raw += token.raw;
           lastToken.text += token.text;
         } else {
@@ -510,7 +492,6 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // and the outer loop walks the run char-by-char, giving O(n^2) time.
       // Consume the whole run as literal text in one step.
       const firstChar = src[0];
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       if (firstChar === '*' || firstChar === '_') {
         const pos = maskedSrc.length - src.length;
         const lastCloser = cachedLastPossibleEmStrongCloserIndex(this.tokenizer, maskedSrc, firstChar);
@@ -519,14 +500,10 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
           while (runEnd < src.length && src.charCodeAt(runEnd) === firstChar.charCodeAt(0)) runEnd++;
           const raw = src.substring(0, runEnd);
           const lastToken = tokens.at(-1);
-          // hot-path: allow Public token types are strings.
           if (lastToken?.type === 'text' && !lastToken.escaped) {
-            // hot-path: allow The lexer keeps the raw Markdown and the token text.
             lastToken.raw += raw;
-            // hot-path: allow The lexer keeps the raw Markdown and the token text.
             lastToken.text += raw;
           } else {
-            // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
             tokens.push({ type: 'text', raw, text: raw, escaped: false } as Tokens.Text);
           }
           src = src.substring(runEnd);
@@ -534,7 +511,6 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
           keepPrevChar = true;
           continue;
         }
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       } else if (firstChar === '~') {
         const pos = maskedSrc.length - src.length;
         const lastCloser = cachedLastPossibleDelCloserIndex(this.tokenizer, maskedSrc);
@@ -543,14 +519,10 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
           while (runEnd < src.length && src.charCodeAt(runEnd) === 126 /* ~ */) runEnd++;
           const raw = src.substring(0, runEnd);
           const lastToken = tokens.at(-1);
-          // hot-path: allow Public token types are strings.
           if (lastToken?.type === 'text' && !lastToken.escaped) {
-            // hot-path: allow The lexer keeps the raw Markdown and the token text.
             lastToken.raw += raw;
-            // hot-path: allow The lexer keeps the raw Markdown and the token text.
             lastToken.text += raw;
           } else {
-            // hot-path: allow Each tokenization call owns the tokens and arrays it returns.
             tokens.push({ type: 'text', raw, text: raw, escaped: false } as Tokens.Text);
           }
           src = src.substring(runEnd);
@@ -607,12 +579,9 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       let cutSrc = src;
       if (this.options.extensions?.startInline) {
         let startIndex = Infinity;
-        // hot-path: allow This string operation computes the Markdown text used by the next rule.
         const tempSrc = src.slice(1);
         let tempStart;
-        // hot-path: allow Extensions use the public token names and callback context.
         this.options.extensions.startInline.forEach((getStartIndex) => {
-          // hot-path: allow Extensions use the public token names and callback context.
           tempStart = getStartIndex.call({ lexer: this }, tempSrc);
           if (typeof tempStart === 'number' && tempStart >= 0) {
             startIndex = Math.min(startIndex, tempStart);
@@ -624,17 +593,13 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       }
       if (token = this.tokenizer.inlineText(cutSrc)) {
         src = src.substring(token.raw.length);
-        // hot-path: allow This string operation computes the Markdown text used by the next rule.
         const lastChar = token.raw.slice(-1);
-        // hot-path: allow This check reads the Markdown or HTML syntax as text.
         if (lastChar !== '_') { // Track prevChar before string of ____ started
           prevChar = lastChar;
         }
         keepPrevChar = true;
         const lastToken = tokens.at(-1);
-        // hot-path: allow Public token types are strings.
         if (lastToken?.type === 'text') {
-          // hot-path: allow The lexer keeps the raw Markdown and the token text.
           lastToken.raw += token.raw;
           lastToken.text += token.text;
         } else {
@@ -669,9 +634,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     while ((match = blockSkip.exec(src))) {
       const start = match.index + (match[2] ? match[2].length : 0);
       let end = match.index + match[0].length;
-      // hot-path: allow This check reads the Markdown or HTML syntax as text.
       if (src.charAt(start) === '<') {
-        // hot-path: allow This string operation computes the Markdown text used by the next rule.
         const rest = src.slice(start);
         const html = tag.exec(rest) || autolink.exec(rest);
         if (!html) {
@@ -681,11 +644,9 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         end = start + html[0].length;
         blockSkip.lastIndex = end;
       }
-      // hot-path: allow The inline mask preserves source offsets for delimiter matching.
       masked += src.slice(last, start) + '[' + 'a'.repeat(end - start - 2) + ']';
       last = end;
     }
-    // hot-path: allow The inline mask preserves source offsets for delimiter matching.
     return last === 0 ? src : masked + src.slice(last);
   }
 
@@ -699,14 +660,10 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     let maskedSrc = src;
 
     // Mask out reflinks
-    // hot-path: allow Link definitions use normalized Markdown labels as keys.
     if (this.tokens.links && src.includes('[')) {
       const reflinkSearch = this.tokenizer.rules.inline.reflinkSearch;
-      // hot-path: allow The inline mask preserves source offsets for delimiter matching.
       const maskReflink = (match0: string): string => {
-        // hot-path: allow The tokenizer uses the regex match and its captures to apply Markdown rules.
         const refStart = match0.lastIndexOf('[');
-        // hot-path: allow Link definitions use normalized Markdown labels as keys.
         if (!Object.hasOwn(this.tokens.links, normalizeLabel(match0.slice(refStart + 1, -1)))) {
           return match0;
         }
@@ -715,20 +672,15 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         // link, so flattening the whole span would hide the emphasis that
         // does still apply inside it. Mask the links it holds instead.
         // Images are exempt: their text is flattened into an alt attribute.
-        // hot-path: allow The tokenizer uses the regex match and its captures to apply Markdown rules.
         if (refStart > 1 && match0.charAt(0) !== '!') {
-          // hot-path: allow The tokenizer uses the regex match and its captures to apply Markdown rules.
           const text = match0.slice(1, refStart - 1);
           if (this.linkInText(text)) {
-            // hot-path: allow The inline mask preserves source offsets for delimiter matching.
             return '[' + text.replace(reflinkSearch, maskReflink)
               + '][' + 'a'.repeat(match0.length - refStart - 2) + ']';
           }
         }
-        // hot-path: allow The tokenizer uses the regex match and its captures to apply Markdown rules.
         return '[' + 'a'.repeat(match0.length - 2) + ']';
       };
-      // hot-path: allow The inline mask preserves source offsets for delimiter matching.
       maskedSrc = maskedSrc.replace(reflinkSearch, maskReflink);
     }
 
@@ -738,13 +690,11 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     // unicode punctuation, so an escaped astral character is 3 code units.
     // A backslash inside a code span is literal, not an escape. Mask the
     // backticks inside the span instead, so blockSkip still skips all of it.
-    // hot-path: allow The inline mask preserves source offsets for delimiter matching.
     maskedSrc = maskedSrc.replace(this.tokenizer.rules.inline.anyPunctuationOutsideCode, (match0, code, punct) => {
       if (punct) {
         return '+'.repeat(match0.length);
       }
       if (code) {
-        // hot-path: allow Hoisting this regex with the replacement callbacks did not improve the benchmark.
         return code + match0.slice(code.length, -code.length).replace(/`/g, '+') + code;
       }
       return match0;
@@ -754,7 +704,6 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     maskedSrc = this.#maskBlocks(maskedSrc);
 
     // Mask out blocks from extensions
-    // hot-path: allow Extensions use the public token names and callback context.
     maskedSrc = this.options.hooks?.emStrongMask?.call({ lexer: this }, maskedSrc) ?? maskedSrc;
 
     return maskedSrc;

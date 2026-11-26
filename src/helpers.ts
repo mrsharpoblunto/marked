@@ -12,7 +12,6 @@ const escapeReplacements: { [index: string]: string } = {
 };
 const getEscapeReplacement = (ch: string) => escapeReplacements[ch];
 
-/** @hotIgnore The escape regex scans the input and replacement creates HTML text. */
 export function escapeHtmlEntities(html: string, encode?: boolean) {
   if (encode) {
     if (other.escapeTest.test(html)) {
@@ -32,7 +31,6 @@ export function escapeHtmlEntities(html: string, encode?: boolean) {
  * character they name. Values that are zero, out of range, or a surrogate become the
  * replacement character.
  */
-/** @hotIgnore The regex scans the input and replacement decodes each reference. */
 export function decodeNumericCharacterReferences(text: string) {
   if (!other.numericCharacterReference.test(text)) {
     return text;
@@ -51,7 +49,6 @@ export function decodeNumericCharacterReferences(text: string) {
   });
 }
 
-/** @hotIgnore URI encoding scans the URL and allocates an encoded string. */
 export function cleanUrl(href: string) {
   try {
     href = encodeURI(href).replace(other.percentDecode, '%');
@@ -111,7 +108,6 @@ export function splitCells(tableRow: string, count?: number) {
  * @param c
  * @param invert Remove suffix of non-c chars instead. Default falsey.
  */
-/** @hotIgnore The suffix scan takes time proportional to the suffix length. */
 export function rtrim(str: string, c: string, invert?: boolean) {
   const l = str.length;
   if (l === 0) {
@@ -157,7 +153,6 @@ export function trimTrailingBlankLines(str: string) {
  * through upper case does, as in commonmark.js; the final `toLowerCase()`
  * keeps the folded label lower case, the form `def.tag` has always used.
  */
-/** @hotIgnore Whitespace replacement and Unicode case conversion scan and allocate strings. */
 export function normalizeLabel(label: string) {
   // The spec also asks for leading and trailing spaces, tabs and line endings
   // to be stripped, and for internal runs of them to collapse to one space.
@@ -166,7 +161,6 @@ export function normalizeLabel(label: string) {
   return label.trim().replace(other.multipleSpaceGlobal, ' ').toLowerCase().toUpperCase().toLowerCase();
 }
 
-/** @hotIgnore The bracket scan takes time proportional to the link text. */
 export function findClosingBracket(str: string, b: string) {
   // an opening bracket on its own is still unbalanced, so both have to be absent
   if (str.indexOf(b[0]) === -1 && str.indexOf(b[1]) === -1) {
@@ -229,7 +223,6 @@ const emStrongDelCloserHintStacks = new WeakMap<object, EmStrongDelCloserHintFra
  * Finding one only means "keep looking": CommonMark rules 9–10 and mid-run
  * openers are still applied in the loop (#4099).
  */
-/** @hotIgnore The scan reads each code unit and allocates a closer frame. */
 function scanLastPossibleEmStrongDelClosers(src: string): EmStrongDelCloserHintFrame {
   const lastPossibleEmStrongCloserIndex: LastPossibleEmStrongCloserIndex = { '*': -1, _: -1 };
   let lastPossibleDelCloserIndex = -1;
@@ -269,12 +262,10 @@ function scanLastPossibleEmStrongDelClosers(src: string): EmStrongDelCloserHintF
 /** @hot */
 export function beginEmStrongDelCloserScan(tokenizer: object, maskedSrc: string): void {
   const frame = scanLastPossibleEmStrongDelClosers(maskedSrc);
-  // hot-path: allow The closer cache tracks nested inline passes per tokenizer.
   const stack = emStrongDelCloserHintStacks.get(tokenizer);
   if (stack) {
     stack.push(frame);
   } else {
-    // hot-path: allow The closer cache tracks nested inline passes per tokenizer.
     emStrongDelCloserHintStacks.set(tokenizer, [frame]);
   }
 }
@@ -285,14 +276,12 @@ export function beginEmStrongDelCloserScan(tokenizer: object, maskedSrc: string)
  */
 /** @hot */
 export function endEmStrongDelCloserScan(tokenizer: object): void {
-  // hot-path: allow The closer cache tracks nested inline passes per tokenizer.
   const stack = emStrongDelCloserHintStacks.get(tokenizer);
   if (!stack) {
     return;
   }
   stack.pop();
   if (stack.length === 0) {
-    // hot-path: allow The closer cache tracks nested inline passes per tokenizer.
     emStrongDelCloserHintStacks.delete(tokenizer);
   }
 }
@@ -304,14 +293,10 @@ export function endEmStrongDelCloserScan(tokenizer: object): void {
  */
 /** @hot */
 export function cachedLastPossibleEmStrongCloserIndex(tokenizer: object, maskedSrc: string, delim: '*' | '_'): number {
-  // hot-path: allow The closer cache tracks nested inline passes per tokenizer.
   const frame = emStrongDelCloserHintStacks.get(tokenizer)?.at(-1);
-  // hot-path: allow The inline mask preserves source offsets for delimiter matching.
   if (frame && frame.maskedSrc === maskedSrc) {
-    // hot-path: allow The closer cache tracks nested inline passes per tokenizer.
     return frame.lastPossibleEmStrongCloserIndex[delim];
   }
-  // hot-path: allow The closer cache tracks nested inline passes per tokenizer.
   return scanLastPossibleEmStrongDelClosers(maskedSrc).lastPossibleEmStrongCloserIndex[delim];
 }
 
@@ -322,9 +307,7 @@ export function cachedLastPossibleEmStrongCloserIndex(tokenizer: object, maskedS
  */
 /** @hot */
 export function cachedLastPossibleDelCloserIndex(tokenizer: object, maskedSrc: string): number {
-  // hot-path: allow The closer cache tracks nested inline passes per tokenizer.
   const frame = emStrongDelCloserHintStacks.get(tokenizer)?.at(-1);
-  // hot-path: allow The inline mask preserves source offsets for delimiter matching.
   if (frame && frame.maskedSrc === maskedSrc) {
     return frame.lastPossibleDelCloserIndex;
   }

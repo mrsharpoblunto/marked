@@ -26,7 +26,6 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
    */
   /** @hot */
   static parse<ParserOutput = string, RendererOutput = string>(tokens: Token[], options?: MarkedOptions<ParserOutput, RendererOutput>) {
-    // hot-path: allow Each public call needs its own instance for options and recursive calls.
     const parser = new _Parser<ParserOutput, RendererOutput>(options);
     return parser.parse(tokens);
   }
@@ -36,7 +35,6 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
    */
   /** @hot */
   static parseInline<ParserOutput = string, RendererOutput = string>(tokens: Token[], options?: MarkedOptions<ParserOutput, RendererOutput>) {
-    // hot-path: allow Each public call needs its own instance for options and recursive calls.
     const parser = new _Parser<ParserOutput, RendererOutput>(options);
     return parser.parseInline(tokens);
   }
@@ -54,14 +52,10 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
 
       // Run any renderer extensions
       const rendererExt = this.options.extensions?.renderers;
-      // hot-path: allow Extensions use the public token names and callback context.
       if (rendererExt && Object.hasOwn(rendererExt, anyToken.type) && rendererExt[anyToken.type]) {
         const genericToken = anyToken as Tokens.Generic;
-        // hot-path: allow Extensions use the public token names and callback context.
         const ret = rendererExt[genericToken.type].call({ parser: this }, genericToken);
-        // hot-path: allow The extension fallback accepts only built-in token types.
         if (ret !== false || !['space', 'hr', 'heading', 'code', 'table', 'blockquote', 'list', 'checkbox', 'html', 'def', 'paragraph', 'text'].includes(genericToken.type)) {
-          // hot-path: allow The renderer builds the output HTML string.
           out += ret === false ? '' : ret ?? '';
           continue;
         }
@@ -69,74 +63,59 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
 
       const token = anyToken as MarkedToken;
 
-      // hot-path: allow Public token types are strings.
       switch (token.type) {
         case 'space': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += this.renderer.space(token);
           break;
         }
         case 'hr': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += this.renderer.hr(token);
           break;
         }
         case 'heading': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += this.renderer.heading(token);
           break;
         }
         case 'code': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += this.renderer.code(token);
           break;
         }
         case 'table': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += this.renderer.table(token);
           break;
         }
         case 'blockquote': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += this.renderer.blockquote(token);
           break;
         }
         case 'list': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += this.renderer.list(token);
           break;
         }
         case 'checkbox': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += this.renderer.checkbox(token);
           break;
         }
         case 'html': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += this.renderer.html(token);
           break;
         }
         case 'def': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += this.renderer.def(token);
           break;
         }
         case 'paragraph': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += this.renderer.paragraph(token);
           break;
         }
         case 'text': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += this.renderer.text(token);
           break;
         }
 
         default: {
-          // hot-path: allow Public token types are strings.
           const errMsg = 'Token with "' + token.type + '" type was not found.';
           if (this.options.silent) {
-            // hot-path: allow Report an invalid token only in silent mode.
             console.error(errMsg);
             return '' as ParserOutput;
           } else {
@@ -162,13 +141,9 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
 
       // Run any renderer extensions
       const rendererExt = this.options.extensions?.renderers;
-      // hot-path: allow Extensions use the public token names and callback context.
       if (rendererExt && Object.hasOwn(rendererExt, anyToken.type) && rendererExt[anyToken.type]) {
-        // hot-path: allow Extensions use the public token names and callback context.
         const ret = rendererExt[anyToken.type].call({ parser: this }, anyToken);
-        // hot-path: allow The extension fallback accepts only built-in token types.
         if (ret !== false || !['escape', 'html', 'link', 'image', 'checkbox', 'strong', 'em', 'codespan', 'br', 'del', 'text'].includes(anyToken.type)) {
-          // hot-path: allow The renderer builds the output HTML string.
           out += ret === false ? '' : ret ?? '';
           continue;
         }
@@ -176,68 +151,54 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
 
       const token = anyToken as MarkedToken;
 
-      // hot-path: allow Public token types are strings.
       switch (token.type) {
         case 'escape': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += renderer.text(token);
           break;
         }
         case 'html': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += renderer.html(token);
           break;
         }
         case 'link': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += renderer.link(token);
           break;
         }
         case 'image': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += renderer.image(token);
           break;
         }
         case 'checkbox': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += renderer.checkbox(token);
           break;
         }
         case 'strong': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += renderer.strong(token);
           break;
         }
         case 'em': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += renderer.em(token);
           break;
         }
         case 'codespan': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += renderer.codespan(token);
           break;
         }
         case 'br': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += renderer.br(token);
           break;
         }
         case 'del': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += renderer.del(token);
           break;
         }
         case 'text': {
-          // hot-path: allow The renderer builds the output HTML string.
           out += renderer.text(token);
           break;
         }
         default: {
-          // hot-path: allow Public token types are strings.
           const errMsg = 'Token with "' + token.type + '" type was not found.';
           if (this.options.silent) {
-            // hot-path: allow Report an invalid token only in silent mode.
             console.error(errMsg);
             return '' as ParserOutput;
           } else {

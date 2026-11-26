@@ -11,7 +11,6 @@ import type { _Parser } from './Parser.ts';
 // Literal code, escaped punctuation and autolinks must survive the later
 // alt-attribute escaping. Copy tokens so rendering the image cannot change
 // the token tree.
-/** @hotIgnore Visits the image token tree and copies tokens that need escaping. */
 function imageTextTokens(tokens: Token[], literal = false): Token[] {
   let copy: Token[] | undefined;
   for (let i = 0; i < tokens.length; i++) {
@@ -70,21 +69,17 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
 
   /** @hot */
   code({ text, lang, escaped }: Tokens.Code): RendererOutput {
-    // hot-path: allow RegExp returns an array. Index zero is the full match.
     const langString = (lang || '').match(other.notSpaceStart)?.[0];
 
     // An empty code block has no content, so it must not gain a newline.
-    // hot-path: allow Replacement normalizes Markdown text or escapes HTML.
     const code = text ? text.replace(other.endingNewline, '') + '\n' : '';
 
     if (!langString) {
-      // hot-path: allow The renderer builds the output HTML string.
       return '<pre><code>'
         + (escaped ? code : escapeHtmlEntities(code, true))
         + '</code></pre>\n' as RendererOutput;
     }
 
-    // hot-path: allow The renderer builds the output HTML string.
     return '<pre><code class="language-'
       + escapeHtmlEntities(langString)
       + '">'
@@ -95,7 +90,6 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
   /** @hot */
   blockquote({ tokens }: Tokens.Blockquote): RendererOutput {
     const body = this.parser.parse(tokens);
-    // hot-path: allow The renderer builds the output HTML string.
     return `<blockquote>\n${body}</blockquote>\n` as RendererOutput;
   }
 
@@ -111,7 +105,6 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
 
   /** @hot */
   heading({ tokens, depth }: Tokens.Heading): RendererOutput {
-    // hot-path: allow The renderer builds the output HTML string.
     return `<h${depth}>${this.parser.parseInline(tokens)}</h${depth}>\n` as RendererOutput;
   }
 
@@ -128,26 +121,21 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
     let body = '';
     for (let j = 0; j < token.items.length; j++) {
       const item = token.items[j];
-      // hot-path: allow The renderer builds the output HTML string.
       body += this.listitem(item);
     }
 
     const type = ordered ? 'ol' : 'ul';
-    // hot-path: allow The renderer builds the output HTML string.
     const startAttr = (ordered && start !== 1) ? (' start="' + start + '"') : '';
-    // hot-path: allow The renderer builds the output HTML string.
     return '<' + type + startAttr + '>\n' + body + '</' + type + '>\n' as RendererOutput;
   }
 
   /** @hot */
   listitem(item: Tokens.ListItem): RendererOutput {
-    // hot-path: allow The renderer builds the output HTML string.
     return `<li>${this.parser.parse(item.tokens)}</li>\n` as RendererOutput;
   }
 
   /** @hot */
   checkbox({ checked }: Tokens.Checkbox): RendererOutput {
-    // hot-path: allow The renderer builds the output HTML string.
     return '<input '
       + (checked ? 'checked="" ' : '')
       + 'disabled="" type="checkbox"> ' as RendererOutput;
@@ -155,7 +143,6 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
 
   /** @hot */
   paragraph({ tokens }: Tokens.Paragraph): RendererOutput {
-    // hot-path: allow The renderer builds the output HTML string.
     return `<p>${this.parser.parseInline(tokens)}</p>\n` as RendererOutput;
   }
 
@@ -166,10 +153,8 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
     // header
     let cell = '';
     for (let j = 0; j < token.header.length; j++) {
-      // hot-path: allow The renderer builds the output HTML string.
       cell += this.tablecell(token.header[j]);
     }
-    // hot-path: allow Renderer methods receive temporary values in their public argument shape.
     header += this.tablerow({ text: cell as ParserOutput });
 
     let body = '';
@@ -178,17 +163,13 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
 
       cell = '';
       for (let k = 0; k < row.length; k++) {
-        // hot-path: allow The renderer builds the output HTML string.
         cell += this.tablecell(row[k]);
       }
 
-      // hot-path: allow Renderer methods receive temporary values in their public argument shape.
       body += this.tablerow({ text: cell as ParserOutput });
     }
-    // hot-path: allow The renderer builds the output HTML string.
     if (body) body = `<tbody>${body}</tbody>`;
 
-    // hot-path: allow The renderer builds the output HTML string.
     return '<table>\n'
       + '<thead>\n'
       + header
@@ -199,7 +180,6 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
 
   /** @hot */
   tablerow({ text }: Tokens.TableRow<ParserOutput>): RendererOutput {
-    // hot-path: allow The renderer builds the output HTML string.
     return `<tr>\n${text}</tr>\n` as RendererOutput;
   }
 
@@ -208,11 +188,8 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
     const content = this.parser.parseInline(token.tokens);
     const type = token.header ? 'th' : 'td';
     const tag = token.align
-      // hot-path: allow The renderer builds the output HTML string.
       ? `<${type} align="${token.align}">`
-      // hot-path: allow The renderer builds the output HTML string.
       : `<${type}>`;
-    // hot-path: allow The renderer builds the output HTML string.
     return tag + content + `</${type}>\n` as RendererOutput;
   }
 
@@ -221,19 +198,16 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
    */
   /** @hot */
   strong({ tokens }: Tokens.Strong): RendererOutput {
-    // hot-path: allow The renderer builds the output HTML string.
     return `<strong>${this.parser.parseInline(tokens)}</strong>` as RendererOutput;
   }
 
   /** @hot */
   em({ tokens }: Tokens.Em): RendererOutput {
-    // hot-path: allow The renderer builds the output HTML string.
     return `<em>${this.parser.parseInline(tokens)}</em>` as RendererOutput;
   }
 
   /** @hot */
   codespan({ text }: Tokens.Codespan): RendererOutput {
-    // hot-path: allow The renderer builds the output HTML string.
     return `<code>${escapeHtmlEntities(text, true)}</code>` as RendererOutput;
   }
 
@@ -244,7 +218,6 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
 
   /** @hot */
   del({ tokens }: Tokens.Del): RendererOutput {
-    // hot-path: allow The renderer builds the output HTML string.
     return `<del>${this.parser.parseInline(tokens)}</del>` as RendererOutput;
   }
 
@@ -260,13 +233,10 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
       return parsedText as RendererOutput;
     }
     href = escapeHtmlEntities(cleanHref, autolink);
-    // hot-path: allow The renderer builds the output HTML string.
     let out = '<a href="' + href + '"';
     if (title) {
-      // hot-path: allow The renderer builds the output HTML string.
       out += ' title="' + (escapeHtmlEntities(title)) + '"';
     }
-    // hot-path: allow The renderer builds the output HTML string.
     out += '>' + parsedText + '</a>';
     return out as RendererOutput;
   }
@@ -282,23 +252,18 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
     }
     href = cleanHref;
 
-    // hot-path: allow The renderer builds the output HTML string.
     let out = `<img src="${escapeHtmlEntities(href)}" alt="${escapeHtmlEntities(text)}"`;
     if (title) {
-      // hot-path: allow The renderer builds the output HTML string.
       out += ` title="${escapeHtmlEntities(title)}"`;
     }
-    // hot-path: allow The renderer builds the output HTML string.
     out += '>';
     return out as RendererOutput;
   }
 
   /** @hot */
   text(token: Tokens.Text | Tokens.Escape): RendererOutput {
-    // hot-path: allow This check reads a field from the public token shape.
     return 'tokens' in token && token.tokens
       ? this.parser.parseInline(token.tokens) as unknown as RendererOutput
-      // hot-path: allow This check reads a field from the public token shape.
       : ('escaped' in token && token.escaped ? token.text as RendererOutput : escapeHtmlEntities(token.text) as RendererOutput);
   }
 }
