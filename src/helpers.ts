@@ -133,17 +133,18 @@ export function rtrim(str: string, c: string, invert?: boolean) {
 }
 
 export function trimTrailingBlankLines(str: string) {
-  const lines = str.split('\n');
-  let end = lines.length - 1;
-  while (end >= 0 && other.blankLine.test(lines[end])) {
-    end--;
+  let lineEnd = str.length;
+  let blankLines = 0;
+  for (let i = lineEnd - 1; i >= 0; i--) {
+    const code = str.charCodeAt(i);
+    if (code === 10) {
+      blankLines++;
+      lineEnd = i;
+    } else if (code !== 32 && code !== 9) {
+      return blankLines > 1 ? str.slice(0, lineEnd) : str;
+    }
   }
-  if (lines.length - end <= 2) {
-    // we want to keep single trailing blank lines
-    return str;
-  }
-
-  return lines.slice(0, end + 1).join('\n');
+  return blankLines === 0 ? str : '';
 }
 
 /**
