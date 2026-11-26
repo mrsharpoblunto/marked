@@ -1,7 +1,14 @@
 import type { Tokens } from './Tokens.ts';
 import type { _Parser } from './Parser.ts';
 import { emit } from './OutputBuffer.ts';
+import { escapeHtmlEntities } from './helpers.ts';
 import type { OutputBuffer } from './OutputBuffer.ts';
+
+export const enum TextMode {
+  Plain,
+  Image,
+  Literal,
+}
 
 /**
  * TextRenderer
@@ -9,7 +16,8 @@ import type { OutputBuffer } from './OutputBuffer.ts';
  */
 export class _TextRenderer<RendererOutput = string> {
   parser!: _Parser<unknown, RendererOutput>;
-  // no need for block level renderers
+  /** @internal */
+  imageMode = TextMode.Plain;
   strong({ text, tokens }: Tokens.Strong): RendererOutput;
   strong(token: Tokens.Strong): RendererOutput {
     const output = { html: '' };
@@ -18,6 +26,7 @@ export class _TextRenderer<RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   strongAt(token: Tokens.Strong, output: OutputBuffer): void {
     if (token.tokens) {
       this.parser.renderInlines(token.tokens, output, this);
@@ -34,6 +43,7 @@ export class _TextRenderer<RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   emAt(token: Tokens.Em, output: OutputBuffer): void {
     if (token.tokens) {
       this.parser.renderInlines(token.tokens, output, this);
@@ -50,8 +60,9 @@ export class _TextRenderer<RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   codespanAt(token: Tokens.Codespan, output: OutputBuffer): void {
-    emit(output, token.text);
+    emit(output, this.imageMode ? escapeHtmlEntities(token.text, true) : token.text);
   }
 
   del({ text, tokens }: Tokens.Del): RendererOutput;
@@ -62,6 +73,7 @@ export class _TextRenderer<RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   delAt(token: Tokens.Del, output: OutputBuffer): void {
     if (token.tokens) {
       this.parser.renderInlines(token.tokens, output, this);
@@ -78,6 +90,7 @@ export class _TextRenderer<RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   htmlAt(token: Tokens.HTML | Tokens.Tag, output: OutputBuffer): void {
     emit(output, token.text);
   }
@@ -90,8 +103,19 @@ export class _TextRenderer<RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   textAt(token: Tokens.Text | Tokens.Escape | Tokens.Tag, output: OutputBuffer): void {
-    emit(output, token.text);
+    emit(output, this.imageMode === TextMode.Literal ? escapeHtmlEntities(token.text, true) : token.text);
+  }
+
+  /** @internal */
+  /** @hot */
+  escapeAt(token: Tokens.Escape, output: OutputBuffer): void {
+    if (this.imageMode) {
+      emit(output, escapeHtmlEntities(token.text, true));
+    } else {
+      this.textAt(token, output);
+    }
   }
 
   link({ text, tokens }: Tokens.Link): RendererOutput;
@@ -102,11 +126,19 @@ export class _TextRenderer<RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   linkAt(token: Tokens.Link, output: OutputBuffer): void {
+    const mode = this.imageMode;
+    const literal = mode !== TextMode.Plain && token.autolink;
     if (token.tokens) {
-      this.parser.renderInlines(token.tokens, output, this);
+      if (literal) this.imageMode = TextMode.Literal;
+      try {
+        this.parser.renderInlines(token.tokens, output, this);
+      } finally {
+        this.imageMode = mode;
+      }
     } else {
-      emit(output, token.text);
+      emit(output, literal ? escapeHtmlEntities(token.text, true) : token.text);
     }
   }
 
@@ -118,6 +150,7 @@ export class _TextRenderer<RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   imageAt(token: Tokens.Image, output: OutputBuffer): void {
     if (token.tokens) {
       this.parser.renderInlines(token.tokens, output, this);
@@ -133,6 +166,7 @@ export class _TextRenderer<RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   brAt(_token: Tokens.Br | undefined, output: OutputBuffer): void {
     emit(output, '\n');
   }
@@ -145,6 +179,7 @@ export class _TextRenderer<RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   checkboxAt(token: Tokens.Checkbox, output: OutputBuffer): void {
     emit(output, token.raw);
   }

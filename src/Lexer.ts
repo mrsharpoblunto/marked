@@ -626,7 +626,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // Consume the whole run as literal text in one step.
       if (firstCode === 42 || firstCode === 95 || firstCode === 126) {
         const pos = maskedSrc.length - src.length + offset;
-        const lastCloser = firstCode === 42 ? this.#closers.star
+        const lastCloser = firstCode === 42
+          ? this.#closers.star
           : firstCode === 95 ? this.#closers.underscore : this.#closers.tilde;
         if (lastCloser <= pos) {
           let runEnd = offset + 1;

@@ -1,5 +1,5 @@
-import { _Renderer, rendererSlots } from './Renderer.ts';
-import { _TextRenderer, textRendererSlots } from './TextRenderer.ts';
+import { _Renderer, imageTextTokens, rendererSlots } from './Renderer.ts';
+import { _TextRenderer, TextMode, textRendererSlots } from './TextRenderer.ts';
 import { _defaults } from './defaults.ts';
 import { emit } from './OutputBuffer.ts';
 import type { OutputBuffer } from './OutputBuffer.ts';
@@ -159,8 +159,18 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
 
   /** @internal */
   renderText(tokens: Token[], output: OutputBuffer): void {
-    this.#textSlots ??= textRendererSlots(this.textRenderer);
-    this.renderInlines(tokens, output, this.#textSlots);
+    const renderer = this.#textSlots ??= textRendererSlots(this.textRenderer);
+    if (renderer !== this.textRenderer || this.options.extensions?.renderers) {
+      this.renderInlines(imageTextTokens(tokens), output, renderer);
+      return;
+    }
+    const previous = renderer.imageMode;
+    renderer.imageMode = TextMode.Image;
+    try {
+      this.renderInlines(tokens, output, renderer);
+    } finally {
+      renderer.imageMode = previous;
+    }
   }
 
   /** @internal */
@@ -180,7 +190,7 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
 
       switch (token.type) {
         case 'escape': {
-          renderer.textAt(token, output);
+          renderer.escapeAt(token, output);
           break;
         }
         case 'html': {

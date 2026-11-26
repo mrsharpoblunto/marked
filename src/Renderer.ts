@@ -2,8 +2,9 @@ import { _defaults } from './defaults.ts';
 import {
   cleanUrl,
   escapeHtmlEntities,
+  isStringWhitespace,
+  sourceText,
 } from './helpers.ts';
-import { other } from './rules.ts';
 import { emit } from './OutputBuffer.ts';
 import type { OutputBuffer } from './OutputBuffer.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
@@ -13,7 +14,8 @@ import type { _Parser } from './Parser.ts';
 // Literal code, escaped punctuation and autolinks must survive the later
 // alt-attribute escaping. Copy tokens so rendering the image cannot change
 // the token tree.
-function imageTextTokens(tokens: Token[], literal = false): Token[] {
+/** @hotIgnore User adapter: one copy per changed token or token array, and one escaped text per changed token. */
+export function imageTextTokens(tokens: Token[], literal = false): Token[] {
   let copy: Token[] | undefined;
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
@@ -87,16 +89,20 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
   /** @hot */
   codeAt(token: Tokens.Code, output: OutputBuffer): void {
     const { text, lang, escaped } = token;
-    const langString = (lang || '').match(other.notSpaceStart)?.[0];
-    if (langString) {
+    let langEnd = 0;
+    if (lang) {
+      while (langEnd < lang.length && !isStringWhitespace(lang.charCodeAt(langEnd))) langEnd++;
+    }
+    if (langEnd > 0) {
       emit(output, '<pre><code class="language-');
-      emit(output, escapeHtmlEntities(langString));
+      emit(output, escapeHtmlEntities(sourceText(lang!, 0, langEnd)));
       emit(output, '">');
     } else {
       emit(output, '<pre><code>');
     }
     if (text) {
-      const code = text.replace(other.endingNewline, '');
+      const end = text.length - (text.charCodeAt(text.length - 1) === 10 ? 1 : 0);
+      const code = sourceText(text, 0, end);
       emit(output, escaped ? code : escapeHtmlEntities(code, true));
       emit(output, '\n');
     }
@@ -430,7 +436,7 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
     if (tokens) {
       const previous = output.html;
       output.html = '';
-      this.parser.renderText(imageTextTokens(tokens), output);
+      this.parser.renderText(tokens, output);
       text = output.html;
       output.html = previous;
     }
@@ -461,14 +467,22 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
   /** @internal */
   /** @hot */
   textAt(token: Tokens.Text | Tokens.Escape, output: OutputBuffer): void {
-    if ('tokens' in token && token.tokens) {
-      this.parser.renderInlines(token.tokens, output);
+    const text = token as Tokens.Text;
+    if (text.tokens) {
+      this.parser.renderInlines(text.tokens, output);
     } else {
-      emit(output, 'escaped' in token && token.escaped ? token.text : escapeHtmlEntities(token.text));
+      emit(output, text.escaped ? text.text : escapeHtmlEntities(text.text));
     }
   }
 
   /** @internal */
+  /** @hot */
+  escapeAt(token: Tokens.Escape, output: OutputBuffer): void {
+    this.textAt(token, output);
+  }
+
+  /** @internal */
+  /** @hot */
   tableCellsAt(cells: Tokens.TableCell[], output: OutputBuffer): void {
     emit(output, '<tr>\n');
     for (let i = 0; i < cells.length; i++) {
