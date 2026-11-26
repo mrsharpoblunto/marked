@@ -22,7 +22,6 @@ import {
   trimStartOffset,
   trimEndOffset,
   isStringWhitespace,
-  startCloserScan,
   lastCloser,
   inlineRunAt,
 } from './helpers.ts';
@@ -31,6 +30,12 @@ import type { InlineRuns } from './helpers.ts';
 import type { _Lexer } from './Lexer.ts';
 import type { Links, Tokens, Token } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
+
+/** @hotIgnore User adapter: one masked suffix per delimiter search. */
+function userCloserWindow(rule: RegExp, src: string, offset: number): string {
+  rule.lastIndex = 0;
+  return src.slice(offset);
+}
 
 function orphanDelimiterEnd(runs: InlineRuns, start: number, end: number, delimiter: number): number {
   const entries = runs.entries;
@@ -2544,22 +2549,22 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       if (lastPossibleEmStrongCloserIndex < emStrongCloserWindowStart) return;
       // An emStrongMask hook can return a string with a different length.
       const scanStart = Math.max(0, emStrongCloserWindowStart);
-      const lastCloser = lastPossibleEmStrongCloserIndex - emStrongCloserWindowStart + scanStart;
-      const prepared = star ? this.rules.cursor?.inline.star : this.rules.cursor?.inline.underscore;
-      const defaultCloser = runs !== undefined && prepared?.original === closerRule;
-      const endReg = defaultCloser ? undefined : startCloserScan(closerRule, maskedSrc, scanStart, prepared);
+      const lastCloser = lastPossibleEmStrongCloserIndex - emStrongCloserWindowStart;
+      const defaultCloser = runs !== undefined;
+      const window = defaultCloser ? '' : userCloserWindow(closerRule, maskedSrc, offset - src.length + lLength);
+      const endReg = defaultCloser ? undefined : closerRule;
       const pedantic = !!this.options.pedantic;
       let cursor = defaultCloser ? inlineRunAt(runs!, orphanDelimiterEnd(runs!, scanStart, limit, delimiter) + 1) : 0;
       for (;;) {
         let type: number;
         let closerStart: number;
         if (endReg) {
-          match = endReg.exec(maskedSrc);
+          match = endReg.exec(window);
           if (!match || match.index > lastCloser) break;
           rDelim = match[1] || match[2] || match[3] || match[4] || match[5] || match[6];
           if (!rDelim) continue;
           rLength = rDelim.length;
-          closerStart = match.index + (match[0].codePointAt(0)! > 0xffff ? 2 : 1);
+          closerStart = scanStart + match.index + (match[0].codePointAt(0)! > 0xffff ? 2 : 1);
           type = match[3] || match[4] ? 1 : match[5] || match[6] ? 3 : 2;
         } else {
           if (cursor >= runs!.length) break;
@@ -2567,7 +2572,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           cursor += 5;
           const entries = runs!.entries;
           closerStart = entries[index];
-          if (closerStart >= limit || closerStart - 2 > lastCloser) break;
+          if (closerStart >= limit || closerStart - 2 > scanStart + lastCloser) break;
           if (entries[index + 2] !== delimiter) continue;
           rLength = Math.min(entries[index + 1], limit - closerStart);
           const unit = maskedSrc.charCodeAt(closerStart - 1);
@@ -2576,7 +2581,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
             ? 2
             : 1;
           const before = closerStart - width;
-          if (before > lastCloser) break;
+          if (before > scanStart + lastCloser) break;
           if (before < scanStart) continue;
           type = delimiterCloserType(entries[index + 3], closerStart + rLength === limit ? 0 : entries[index + 4], delimiter, pedantic);
           if (!type) continue;
@@ -2683,20 +2688,20 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       if (lastPossibleDelCloserIndex < delCloserWindowStart) return;
       // An emStrongMask hook can return a string with a different length.
       const scanStart = Math.max(0, delCloserWindowStart);
-      const lastCloser = lastPossibleDelCloserIndex - delCloserWindowStart + scanStart;
-      const prepared = this.rules.cursor?.inline.tilde;
-      const endReg = runs && prepared?.original === closerRule ? undefined : startCloserScan(closerRule, maskedSrc, scanStart, prepared);
+      const lastCloser = lastPossibleDelCloserIndex - delCloserWindowStart;
+      const window = runs ? '' : userCloserWindow(closerRule, maskedSrc, offset - src.length + lLength);
+      const endReg = runs ? undefined : closerRule;
       let cursor = endReg ? 0 : inlineRunAt(runs!, scanStart + 1);
       for (;;) {
         let type: number;
         let closerStart: number;
         if (endReg) {
-          match = endReg.exec(maskedSrc);
+          match = endReg.exec(window);
           if (!match || match.index > lastCloser) break;
           rDelim = match[1] || match[2] || match[3] || match[4] || match[5] || match[6];
           if (!rDelim) continue;
           rLength = rDelim.length;
-          closerStart = match.index + (match[0].codePointAt(0)! > 0xffff ? 2 : 1);
+          closerStart = scanStart + match.index + (match[0].codePointAt(0)! > 0xffff ? 2 : 1);
           type = match[3] || match[4] ? 1 : 2;
         } else {
           if (cursor >= runs!.length) break;
@@ -2704,7 +2709,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           cursor += 5;
           const entries = runs!.entries;
           closerStart = entries[index];
-          if (closerStart >= limit || closerStart - 2 > lastCloser) break;
+          if (closerStart >= limit || closerStart - 2 > scanStart + lastCloser) break;
           if (entries[index + 2] !== 126) continue;
           rLength = Math.min(entries[index + 1], limit - closerStart);
           if (rLength !== lLength) continue;
@@ -2714,7 +2719,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
             ? 2
             : 1;
           const before = closerStart - width;
-          if (before > lastCloser) break;
+          if (before > scanStart + lastCloser) break;
           if (before < scanStart) continue;
           type = delimiterCloserType(entries[index + 3], closerStart + rLength === limit ? 0 : entries[index + 4], 126, false);
           if (!type) continue;
