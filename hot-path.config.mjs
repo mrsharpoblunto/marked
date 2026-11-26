@@ -1,9 +1,9 @@
-import { defineConfig } from "@thestraylight/so-hot-right-now";
+import { defineConfig } from '@thestraylight/so-hot-right-now';
 
 export default defineConfig({
-  include: ["src/**"],
+  include: ['src/**'],
   roots: [
-    { kind: "method", owner: { name: "_Lexer" }, methods: ["lex", "lexInline"], label: "lexer" },
-    { kind: "method", owner: { name: "_Parser" }, methods: ["parse", "parseInline"], label: "parser" },
+    { kind: 'method', owner: { name: '_Lexer' }, methods: ['lex', 'lexInline'], label: 'lexer' },
+    { kind: 'method', owner: { name: '_Parser' }, methods: ['parse', 'parseInline'], label: 'parser' },
   ],
 });
