@@ -1,3 +1,4 @@
+import { tokenKind, TokenKind } from './tokenKind.ts';
 import { createText } from './tokenFactories.ts';
 import { _Tokenizer } from './Tokenizer.ts';
 import { _defaults } from './defaults.ts';
@@ -134,6 +135,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
 
   #slots: _Tokenizer<ParserOutput, RendererOutput>;
   #replaced = 0;
+  #defaultKinds: boolean;
   #closers = { star: -1, underscore: -1, tilde: -1 };
   #maskHook: ((src: string) => string) | undefined;
   #extensions: Pick<NonNullable<MarkedOptions['extensions']>, 'block' | 'inline' | 'startBlock' | 'startInline'> | null | undefined;
@@ -154,6 +156,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       this.#replaced = dispatch.replaced;
     }
     this.#extensions = this.options.extensions;
+    this.#defaultKinds = !suppliedTokenizer && !this.#extensions;
     this.#maskHook = this.options.hooks ? hookSlots(this.options.hooks).emStrongMask : undefined;
     this.tokenizer.options = this.options;
     this.tokenizer.lexer = this;
@@ -237,6 +240,12 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     return this.tokens;
   }
 
+  /** @hot */
+  #kind(token: Token | undefined): number {
+    if (!token) return 0;
+    return (this.#defaultKinds ? token.kind : undefined) ?? tokenKind(token);
+  }
+
   /**
    * Lexing
    */
@@ -302,11 +311,11 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         || (this.#replaced & tokenizerFlags.code))
         && (token = this.#slots.codeAt(src, offset))) {
         offset += token.raw.length;
-        const lastToken = tokens.at(-1);
+        const lastToken = tokens.at(-1) as Tokens.Paragraph | Tokens.Text | undefined;
         // An indented code block cannot interrupt a paragraph.
-        if (lastToken?.type === 'paragraph' || lastToken?.type === 'text') {
-          lastToken.raw += (lastToken.raw.endsWith('\n') ? '' : '\n') + token.raw;
-          lastToken.text += '\n' + token.text;
+        const kind = this.#kind(lastToken);
+        if (lastToken && (kind === TokenKind.Paragraph || kind === TokenKind.Text)) {
+          appendText(lastToken, token.raw, token.text, true);
           this.inlineQueue.at(-1)!.src = lastToken.text;
         } else {
           tokens.push(token);
@@ -373,10 +382,10 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         || (this.#replaced & tokenizerFlags.def))
         && (token = this.#slots.defAt(src, offset))) {
         offset += token.raw.length;
-        const lastToken = tokens.at(-1);
-        if (lastToken?.type === 'paragraph' || lastToken?.type === 'text') {
-          lastToken.raw += (lastToken.raw.endsWith('\n') ? '' : '\n') + token.raw;
-          lastToken.text += '\n' + token.raw;
+        const lastToken = tokens.at(-1) as Tokens.Paragraph | Tokens.Text | undefined;
+        const kind = this.#kind(lastToken);
+        if (lastToken && (kind === TokenKind.Paragraph || kind === TokenKind.Text)) {
+          appendText(lastToken, token.raw, token.raw, true);
           this.inlineQueue.at(-1)!.src = lastToken.text;
         } else {
           // The first definition of a label wins, but a later one still consumes its text
@@ -412,13 +421,12 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       const startExtensions = this.#extensions?.startBlock;
       const cutSrc = startExtensions?.length ? clipForExtensions(startExtensions, this, src, offset) : src;
       if (this.state.top && (token = this.#slots.paragraphAt(cutSrc, offset))) {
-        const lastToken = tokens.at(-1);
+        const lastToken = tokens.at(-1) as Tokens.Paragraph | undefined;
         // A table-shaped header rejected by the table tokenizer is still
         // paragraph continuation, not a new block. Keep custom paragraph
         // tokenizers' choice to emit separate paragraphs unchanged.
-        if ((lastParagraphClipped || (lastToken === lastParagraph && mergeAdjacentParagraphs)) && lastToken?.type === 'paragraph') {
-          lastToken.raw += (lastToken.raw.endsWith('\n') ? '' : '\n') + token.raw;
-          lastToken.text += '\n' + token.text;
+        if ((lastParagraphClipped || (lastToken === lastParagraph && mergeAdjacentParagraphs)) && lastToken && this.#kind(lastToken) === TokenKind.Paragraph) {
+          appendText(lastToken, token.raw, token.text, true);
           this.inlineQueue.pop();
           this.inlineQueue.at(-1)!.src = lastToken.text;
           lastParagraph = lastToken;
@@ -434,10 +442,9 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // text
       if (token = this.#slots.textAt(src, offset)) {
         offset += token.raw.length;
-        const lastToken = tokens.at(-1);
-        if (lastToken?.type === 'text') {
-          lastToken.raw += (lastToken.raw.endsWith('\n') ? '' : '\n') + token.raw;
-          lastToken.text += '\n' + token.text;
+        const lastToken = tokens.at(-1) as Tokens.Text | undefined;
+        if (lastToken && this.#kind(lastToken) === TokenKind.Text) {
+          appendText(lastToken, token.raw, token.text, true);
           this.inlineQueue.pop();
           this.inlineQueue.at(-1)!.src = lastToken.text;
         } else {
@@ -611,10 +618,9 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         || (this.#replaced & tokenizerFlags.reflink))
         && (token = this.#slots.reflinkAt(src, this.tokens.links, offset))) {
         offset += token.raw.length;
-        const lastToken = tokens.at(-1);
-        if (token.type === 'text' && lastToken?.type === 'text') {
-          lastToken.raw += token.raw;
-          lastToken.text += token.text;
+        const lastToken = tokens.at(-1) as Tokens.Text | undefined;
+        if (lastToken && this.#kind(token) === TokenKind.Text && this.#kind(lastToken) === TokenKind.Text) {
+          appendText(lastToken, token.raw, token.text, false);
         } else {
           tokens.push(token);
         }
@@ -634,10 +640,9 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
           let runEnd = offset + 1;
           while (runEnd < src.length && src.charCodeAt(runEnd) === firstCode) runEnd++;
           const raw = sourceText(src, offset, runEnd);
-          const lastToken = tokens.at(-1);
-          if (lastToken?.type === 'text' && !lastToken.escaped) {
-            lastToken.raw += raw;
-            lastToken.text += raw;
+          const lastToken = tokens.at(-1) as Tokens.Text | undefined;
+          if (lastToken && this.#kind(lastToken) === TokenKind.Text && !lastToken.escaped) {
+            appendText(lastToken, raw, raw, false);
           } else {
             tokens.push(createText(raw, raw, false) as Tokens.Text);
           }
@@ -717,10 +722,9 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
           prevChar = token.raw.charAt(last);
         }
         keepPrevChar = true;
-        const lastToken = tokens.at(-1);
-        if (lastToken?.type === 'text') {
-          lastToken.raw += token.raw;
-          lastToken.text += token.text;
+        const lastToken = tokens.at(-1) as Tokens.Text | undefined;
+        if (lastToken && this.#kind(lastToken) === TokenKind.Text) {
+          appendText(lastToken, token.raw, token.text, false);
         } else {
           tokens.push(token);
         }
@@ -836,4 +840,14 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       throw new Error(errMsg);
     }
   }
+}
+
+/** @hotIgnore Output: at most two appends to each of the token's raw and text fields. */
+function appendText(token: Tokens.Text | Tokens.Paragraph, raw: string, text: string, newLine: boolean): void {
+  if (newLine) {
+    if (token.raw.charCodeAt(token.raw.length - 1) !== 10) token.raw += '\n';
+    token.text += '\n';
+  }
+  token.raw += raw;
+  token.text += text;
 }

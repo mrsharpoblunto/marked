@@ -24,7 +24,7 @@ export const TokenKind = {
   ListItem: 21,
 } as const;
 
-/** @hot */
+/** @hotIgnore User adapter: maps a public token type to a kind without allocating. */
 export function tokenKind(token: Token): number {
   switch (token.type) {
     case 'space': return TokenKind.Space;
