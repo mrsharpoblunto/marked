@@ -144,7 +144,7 @@ const _tag = 'address|article|aside|base|basefont|blockquote|body|caption'
   + '|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title'
   + '|tr|track|ul';
 // HTML blocks of types (1) to (6) can interrupt a paragraph, type (7) cannot
-const _htmlInterrupt = edit(' {0,3}(?:</?(?:tag)(?:[ \\t]+|\\n|/?>)|<(?:(?:script|pre|style|textarea)(?:[\\s>]|$)|!--)|<\\?|<![A-Za-z]|<!\\[CDATA\\[)')
+export const paragraphHtmlStart = edit(' {0,3}(?:</?(?:tag)(?:[ \\t]+|\\n|/?>)|<(?:(?:script|pre|style|textarea)(?:[\\s>]|$)|!--)|<\\?|<![A-Za-z]|<!\\[CDATA\\[)')
   .replace('tag', _tag)
   .getRegex();
 // The underline may end with spaces or tabs (CommonMark §4.3). Internal
@@ -159,7 +159,7 @@ const lheading = edit(lheadingCore)
   .replace(/heading/g, / {0,3}#{1,6}(?:\s|$)/) // ATX heading can interrupt
   .replace(/hr/g, / {0,3}(?:(?:-[\t ]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})(?:\n+|$)/) // thematic break can interrupt
   .replace(/\|table/g, '') // table not in commonmark
-  .replace(/html/g, _htmlInterrupt) // block html of types (1) to (6) can interrupt
+  .replace(/html/g, paragraphHtmlStart) // block html of types (1) to (6) can interrupt
   .getRegex();
 const lheadingGfm = edit(lheadingCore)
   .replace(/bull/g, bullet) // lists can interrupt
@@ -169,7 +169,7 @@ const lheadingGfm = edit(lheadingCore)
   .replace(/heading/g, / {0,3}#{1,6}(?:\s|$)/) // ATX heading can interrupt
   .replace(/hr/g, / {0,3}(?:(?:-[\t ]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})(?:\n+|$)/) // thematic break can interrupt
   .replace(/table/g, / {0,3}\|?(?:[:\- ]*\|)+[\:\- ]*\n/) // table can interrupt
-  .replace(/html/g, _htmlInterrupt) // block html of types (1) to (6) can interrupt
+  .replace(/html/g, paragraphHtmlStart) // block html of types (1) to (6) can interrupt
   .getRegex();
 const _paragraph = /^([^\n]+(?:\n(?!hr|heading|lheading|blockquote|fences|list|html|table|[ \t]+\n)[^\n]+)*)/;
 const blockText = /^[^\n]+/;
@@ -211,7 +211,7 @@ const createParagraph = (listInterrupt: RegExp) => edit(_paragraph)
   .replace('blockquote', ' {0,3}>')
   .replace('fences', ' {0,3}(?:`{3,}(?=[^`\\n]*(?:\\n|$))|~~~)[^\\n]*(?:\\n|$)')
   .replace('list', listInterrupt)
-  .replace('html', _htmlInterrupt) // pars can be interrupted by html blocks of types (1) to (6)
+  .replace('html', paragraphHtmlStart) // pars can be interrupted by html blocks of types (1) to (6)
   .getRegex();
 
 // only non-empty lists starting from 1 can interrupt paragraphs
@@ -267,7 +267,7 @@ const gfmTable = edit(gfmTableHeader
   .replace('code', '(?: {4}| {0,3}\t)[^\\n]')
   .replace('fences', ' {0,3}(?:`{3,}(?=[^`\\n]*(?:\\n|$))|~~~)[^\\n]*(?:\\n|$)')
   .replace('list', ' {0,3}(?:[*+-]|1[.)])[ \\t]') // any bullet ends the table rows
-  .replace('html', _htmlInterrupt) // tables can be interrupted by html blocks of types (1) to (6)
+  .replace('html', paragraphHtmlStart) // tables can be interrupted by html blocks of types (1) to (6)
   .getRegex();
 
 const blockGfm: Record<BlockKeys, RegExp> = {
@@ -282,7 +282,7 @@ const blockGfm: Record<BlockKeys, RegExp> = {
     .replace('blockquote', ' {0,3}>')
     .replace('fences', ' {0,3}(?:`{3,}(?=[^`\\n]*(?:\\n|$))|~~~)[^\\n]*(?:\\n|$)')
     .replace('list', ' {0,3}(?:[*+-]|1[.)])[ \\t]+[^ \\t\\n]') // only non-empty lists starting from 1 can interrupt
-    .replace('html', _htmlInterrupt) // pars can be interrupted by html blocks of types (1) to (6)
+    .replace('html', paragraphHtmlStart) // pars can be interrupted by html blocks of types (1) to (6)
     .getRegex(),
 };
 

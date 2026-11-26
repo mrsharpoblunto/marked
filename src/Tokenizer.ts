@@ -1,3 +1,4 @@
+import { blockContentStart, blockIndent, blockIndentEnd, blockLineEnd, thematicBreakEnd } from './BlockLine.ts';
 import { TokenKind } from './tokenKind.ts';
 import {
   createBlockquote, createBr, createCheckbox, createCode, createCodespan,
@@ -24,7 +25,7 @@ import {
   startCloserScan,
   lastCloser,
 } from './helpers.ts';
-import { block, inline, type Rules } from './rules.ts';
+import { block, inline, other, paragraphHtmlStart, type Rules } from './rules.ts';
 import type { _Lexer } from './Lexer.ts';
 import type { Links, Tokens, Token } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
@@ -192,9 +193,78 @@ function isLabelEndInsideToken(src: string, label: string, labelStart: number, r
 }
 
 const standardListRule = block.normal.list;
+const standardHrRule = block.normal.hr;
+const standardTextRule = block.normal.text;
+const standardTextContinuation = other.textIndentedContinuation;
+const standardCodeIndent = other.codeRemoveIndent;
 const commonMarkParagraphRule = block.normal.paragraph;
 const gfmParagraphRule = block.gfm.paragraph;
 const pedanticParagraphRule = block.pedantic.paragraph;
+
+const htmlInterrupt = new RegExp(paragraphHtmlStart.source, 'y');
+const setextInterrupt = new RegExp(block.normal.lheading.source.slice(1), 'y');
+const tableInterrupt = new RegExp(other.tableHeader.source.replace(/^\^/, ''), 'y');
+
+/** @hot */
+function paragraphEnd(src: string, offset: number, pedantic: boolean, gfm: boolean): number {
+  let end = blockLineEnd(src, offset);
+  while (end < src.length) {
+    const start = end + 1;
+    if (start === src.length || src.charCodeAt(start) === 10) break;
+    const content = blockContentStart(src, start);
+    const marker = src.charCodeAt(content);
+    if (marker === 10) break;
+    const spaces = content - start;
+    const atBlockStart = spaces < 4 && blockIndent(src, start, content) < 4;
+    if (atBlockStart) {
+      if (marker === 62) break;
+      if ((marker === 42 || marker === 45 || marker === 95) && thematicBreakEnd(src, content) >= 0) break;
+    }
+    if (marker === 35) {
+      let hashEnd = content + 1;
+      while (hashEnd - content < 6 && src.charCodeAt(hashEnd) === 35) hashEnd++;
+      const after = src.charCodeAt(hashEnd);
+      if (pedantic
+        ? src.charCodeAt(content - 1) !== 9 && (hashEnd > content + 1 || (hashEnd < src.length && after !== 10))
+        : atBlockStart && (hashEnd === src.length || isStringWhitespace(after))) break;
+    }
+    if (pedantic) {
+      setextInterrupt.lastIndex = start;
+      if (setextInterrupt.test(src)) break;
+    } else if (atBlockStart) {
+      if (marker === 60) {
+        htmlInterrupt.lastIndex = start;
+        if (htmlInterrupt.test(src)) break;
+      }
+      if ((marker === 96 || marker === 126)
+        && src.charCodeAt(content + 1) === marker && src.charCodeAt(content + 2) === marker) {
+        if (marker === 126) break;
+        let rest = content + 3;
+        while (src.charCodeAt(rest) === 96) rest++;
+        while (rest < src.length && src.charCodeAt(rest) !== 10 && src.charCodeAt(rest) !== 96) rest++;
+        if (rest === src.length || src.charCodeAt(rest) === 10) break;
+      }
+      let bulletEnd = content;
+      if (marker === 42 || marker === 43 || marker === 45) bulletEnd++;
+      else if (marker === 49 && (src.charCodeAt(content + 1) === 46 || src.charCodeAt(content + 1) === 41)) bulletEnd += 2;
+      if (bulletEnd !== content && (src.charCodeAt(bulletEnd) === 32 || src.charCodeAt(bulletEnd) === 9)) {
+        const first = blockContentStart(src, bulletEnd);
+        if (first < src.length && src.charCodeAt(first) !== 10) break;
+      }
+    }
+    const lineEnd = blockLineEnd(src, content);
+    if (gfm && lineEnd < src.length) {
+      const next = blockContentStart(src, lineEnd + 1);
+      const delimiter = src.charCodeAt(next);
+      if (delimiter === 45 || delimiter === 58 || delimiter === 124) {
+        tableInterrupt.lastIndex = start;
+        if (tableInterrupt.test(src)) break;
+      }
+    }
+    end = lineEnd;
+  }
+  return end;
+}
 
 /** @hot */
 function firstListMarkerEnd(src: string, offset: number): number {
@@ -573,22 +643,17 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     let end = offset;
     while (end < offset + 3 && src.charCodeAt(end) === 32) end++;
 
+    if (this.rules.block.hr !== standardHrRule) {
+      const cap = execAt(this.rules.block.hr, src, offset, this.rules.cursor?.block.hr);
+      if (cap) return createHr(withoutTrailingNewlines(cap[0]));
+      return;
+    }
+
     const marker = src.charCodeAt(end);
     if (marker !== 45 && marker !== 95 && marker !== 42) return;
 
-    let count = 0;
-    while (end < src.length) {
-      const code = src.charCodeAt(end);
-      if (code === marker) {
-        count++;
-      } else if (code !== 32 && code !== 9) {
-        break;
-      }
-      end++;
-    }
-    if (count >= 3 && (end === src.length || src.charCodeAt(end) === 10)) {
-      return createHr(sourceText(src, offset, end));
-    }
+    end = thematicBreakEnd(src, end);
+    if (end >= 0) return createHr(sourceText(src, offset, end));
   }
 
   /** @hot */
@@ -1147,9 +1212,10 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     const rule = this.rules.block.paragraph;
     let raw: string;
     let text: string;
-    if (src.length > offset && src.indexOf('\n', offset) === -1
-      && (rule === commonMarkParagraphRule || rule === gfmParagraphRule || rule === pedanticParagraphRule)) {
-      raw = text = sourceText(src, offset, src.length);
+    if (rule === commonMarkParagraphRule || rule === gfmParagraphRule || rule === pedanticParagraphRule) {
+      const end = paragraphEnd(src, offset, rule === pedanticParagraphRule, rule === gfmParagraphRule);
+      if (end === offset) return;
+      raw = text = sourceText(src, offset, end);
     } else {
       const cap = execAt(rule, src, offset, this.rules.cursor?.block.paragraph);
       if (!cap) return;
@@ -1169,6 +1235,24 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   /** @internal */
   /** @hot */
   textAt(src: string, offset: number): Tokens.Text | undefined {
+    if (this.rules.block.text === standardTextRule
+      && this.rules.other.textIndentedContinuation === standardTextContinuation
+      && this.rules.other.codeRemoveIndent === standardCodeIndent) {
+      const line = blockLineEnd(src, offset);
+      if (line === offset) return;
+      let end = line;
+      let text = sourceText(src, offset, line);
+      while (end < src.length) {
+        const start = end + 1;
+        const indent = blockIndentEnd(src, start);
+        if (indent === start) break;
+        const content = blockContentStart(src, indent);
+        if (content === src.length || src.charCodeAt(content) === 10) break;
+        end = blockLineEnd(src, content);
+        text += '\n' + sourceText(src, indent, end);
+      }
+      return createText(end === line ? text : sourceText(src, offset, end), text, this.lexer.inline(text));
+    }
     const cap = execAt(this.rules.block.text, src, offset, this.rules.cursor?.block.text);
     if (cap) {
       let raw = cap[0];
