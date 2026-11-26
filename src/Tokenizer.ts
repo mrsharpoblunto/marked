@@ -883,6 +883,21 @@ function listLineText(src: string, start: number, end: number, column: number): 
 }
 
 /** @hot */
+function appendListContent(src: string, start: number, end: number, column: number, drop: number, padding: number, segments: number[]) {
+  let first = start;
+  let width = column;
+  while (first < end) {
+    const code = src.charCodeAt(first);
+    if (code === 32) width++;
+    else if (code === 9) width += 4 - (width & 3);
+    else break;
+    first++;
+  }
+  const lead = width - column - drop;
+  segments.push(Math.min(first + Math.max(0, -lead), end), end, padding + Math.max(0, lead));
+}
+
+/** @hot */
 function quoteMarkerAt(src: string, start: number): number {
   let marker = start;
   while (marker < start + 3 && src.charCodeAt(marker) === 32) marker++;
@@ -980,6 +995,7 @@ function quoteSegments(src: string, first: number, end: number, segments: number
  */
 export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   /** @internal */
+  private listBuffer: number[] | undefined;
   private quoteBuffer: number[] | undefined;
   options: MarkedOptions<ParserOutput, RendererOutput>;
   rules!: Rules; // set by the lexer
@@ -1365,6 +1381,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       while (offset < src.length) {
         let endEarly = false;
         let itemContents = '';
+        const segments = this.listBuffer ??= [];
+        segments.length = 0;
+        let hasContinuation = false;
         const bulletIndent = listMarkerEnd(src, offset, marker, isordered, !!this.options.pedantic);
         if (bulletIndent === 0) {
           break;
@@ -1398,7 +1417,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         } else {
           indent = skipSpaces(line, line.length);
           indent = indent > 4 ? 1 : indent; // Treat indented code blocks (> 4 spaces) as having only 1 indent
-          itemContents = line.slice(indent);
+          appendListContent(src, firstLineStart, firstLineEnd, bulletIndent, indent, 0, segments);
           indent += bulletIndent;
         }
 
@@ -1444,8 +1463,13 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
             const nextLineWithoutTabs = pedantic ? nextLine : listLineText(rawLine, 0, rawLine.length, 0);
             const nextIsBlank = trimStartOffset(nextLine, 0, nextLine.length) === nextLine.length;
             if (skipSpaces(nextLineWithoutTabs, nextLineWithoutTabs.length) >= indent || nextIsBlank) {
-              itemContents += '\n';
-              itemContents += sourceText(nextLineWithoutTabs, indent, nextLineWithoutTabs.length);
+              if (pedantic) {
+                itemContents += '\n';
+                itemContents += sourceText(nextLineWithoutTabs, indent, nextLineWithoutTabs.length);
+              } else {
+                segments.push(offset - 1, offset, 0);
+                appendListContent(src, offset, nextEnd, 0, indent, 0, segments);
+              }
               lineIsLazy = false;
             } else {
               // not enough indentation
@@ -1459,7 +1483,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               // their width depends on the column they start at.
               const previous = sourceText(line, lineIndent, line.length);
               let lastBlock = previous;
-              if (!this.options.pedantic && !itemContents.includes('\n') && !previous.includes('\t')) {
+              if (!this.options.pedantic && !hasContinuation && !previous.includes('\t')) {
                 let nested = 0;
                 while (!(hrRegex ? hrRegex.test(sourceText(lastBlock, nested, lastBlock.length)) : listHasHr(lastBlock, nested, maxIndent))) {
                   const after = this.rules.other.nestedBlockMarker === standardNestedMarkers
@@ -1520,13 +1544,20 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
                 && (this.rules.block.lheading === standardSetextRule || this.rules.block.lheading === gfmSetextRule
                   ? setextTextEnd(`${previous}\n${nextLine}`, 0, this.rules.block.lheading === gfmSetextRule, false) >= 0
                   : this.rules.block.lheading.test(`${previous}\n${nextLine}`));
-              const continuation = setextContinuation
-                ? `    ${sourceText(nextLineWithoutTabs, skipSpaces(nextLineWithoutTabs, 3), nextLineWithoutTabs.length)}`
-                : nextLine;
-              itemContents += '\n' + continuation;
+              if (pedantic) {
+                itemContents += '\n' + nextLine;
+              } else {
+                segments.push(offset - 1, offset, 0);
+                if (setextContinuation) {
+                  appendListContent(src, offset, nextEnd, 0, skipSpaces(nextLineWithoutTabs, 3), 4, segments);
+                } else {
+                  segments.push(offset, nextEnd, 0);
+                }
+              }
               lineIsLazy = true;
             }
 
+            hasContinuation = true;
             blankLine = nextIsBlank;
             offset = Math.min(src.length, nextEnd + 1);
             line = nextLineWithoutTabs;
@@ -1548,6 +1579,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           }
         }
 
+        if (!pedantic) itemContents = containerText(src, segments);
         let task = false;
         if (this.options.gfm) {
           if (this.rules.other.listIsTask === standardIsTask) {
