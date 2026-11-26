@@ -524,7 +524,51 @@ export function inlineMaskText(mask: InlineMask, start: number, end: number): st
 }
 
 /** @hot */
-function htmlMaskEnd(mask: InlineMask, source: string, start: number, end: number, rules: Rules, lastEdit: number): number {
+function htmlCandidateEnd(mask: InlineMask, start: number, firstClose: number, end: number): number {
+  const next = inlineMaskCode(mask, start + 1);
+  let marker = 0;
+  let doubleMarker = false;
+  if (next === 63) {
+    marker = 63; // ?>
+  } else if (next === 33) {
+    const kind = inlineMaskCode(mask, start + 2);
+    if (kind === 45 && inlineMaskCode(mask, start + 3) === 45) {
+      if (firstClose === start + 5 || (firstClose === start + 6 && inlineMaskCode(mask, start + 4) === 45)) return firstClose;
+      marker = 45; // -->
+      doubleMarker = true;
+    } else if (kind === 91) {
+      marker = 93; // ]]>
+      doubleMarker = true;
+    }
+  } else if ((next | 32) >= 97 && (next | 32) <= 122) {
+    let quote = 0;
+    for (let i = start + 2; i < end; i++) {
+      const code = inlineMaskCode(mask, i);
+      if (quote) {
+        if (code === quote) quote = 0;
+      } else if (code === 62) {
+        return i + 1;
+      } else if (code === 60) {
+        break;
+      } else if (code === 34 || code === 39) {
+        quote = code;
+      }
+    }
+  }
+  if (marker) {
+    for (let i = firstClose - 1; i < end;) {
+      i = nextEvent(mask, i, end, Event.CloseAngle);
+      if (i === end) break;
+      if (inlineMaskCode(mask, i - 1) === marker
+        && (!doubleMarker || inlineMaskCode(mask, i - 2) === marker)) return i + 1;
+      i++;
+    }
+  }
+  return firstClose;
+}
+
+/** @hot */
+function htmlMaskEnd(mask: InlineMask, source: string, start: number, firstClose: number, end: number, rules: Rules, lastEdit: number): number {
   const { tag, autolink } = rules.inline;
   const cursor = rules.cursor?.inline;
   if (start >= lastEdit) {
@@ -532,8 +576,7 @@ function htmlMaskEnd(mask: InlineMask, source: string, start: number, end: numbe
     if (!match) return -1;
     if (start + match[0].length <= end) return start + match[0].length;
   }
-  while (inlineMaskCode(mask, end - 1) !== 62) end--;
-  const text = inlineMaskText(mask, start, end);
+  const text = inlineMaskText(mask, start, htmlCandidateEnd(mask, start, firstClose, end));
   const match = tag.exec(text) || autolink.exec(text);
   return match ? start + match[0].length : -1;
 }
@@ -550,7 +593,10 @@ export function maskBlocks(mask: InlineMask, source: string, left: number, end: 
     let after = -1;
     if (code === 91) after = blockLinkEnd(mask, i, end);
     else if (code === 96 && (i === left || ((supportsLookbehind || i > searchStart) && inlineMaskCode(mask, i - 1) !== 96))) after = blockCodeEnd(mask, i, end);
-    else if (code === 60 && blockAngleEnd(mask, i, end) >= 0) after = htmlMaskEnd(mask, source, i, end, rules, lastEdit);
+    else if (code === 60) {
+      const firstClose = blockAngleEnd(mask, i, end);
+      if (firstClose >= 0) after = htmlMaskEnd(mask, source, i, firstClose, end, rules, lastEdit);
+    }
     if (after < 0) continue;
     mask.spans.push(i, after);
     writeMask(mask, i, after, MaskCode.Brackets);
