@@ -277,6 +277,73 @@ function tableAlignments(src: string): Tokens.Table['align'] {
   return alignment;
 }
 
+/** @hot */
+function skipSpaces(src: string, maximum: number): number {
+  let end = 0;
+  while (end < maximum && src.charCodeAt(end) === 32) end++;
+  return end;
+}
+
+/** @hot */
+function startsListInterrupt(src: string, maxIndent: number, pedantic: boolean, containers: boolean): boolean {
+  let pos = skipSpaces(src, maxIndent);
+  const marker = src.charCodeAt(pos);
+  if (marker === 96 || marker === 126) {
+    return src.charCodeAt(pos + 1) === marker && src.charCodeAt(pos + 2) === marker;
+  }
+  if (marker === 35) {
+    if (pedantic) return true;
+    const start = pos;
+    while (src.charCodeAt(pos) === 35 && pos - start < 7) pos++;
+    return pos - start <= 6 && (pos === src.length || isStringWhitespace(src.charCodeAt(pos)));
+  }
+  if (!containers) return false;
+  if (marker === 62) return true;
+  if (marker !== 42 && marker !== 43 && marker !== 45) {
+    const start = pos;
+    let code = marker;
+    while (code >= 48 && code <= 57 && pos - start < 9) code = src.charCodeAt(++pos);
+    if (pos === start || (code !== 46 && code !== 41)) return false;
+  }
+  const after = src.charCodeAt(++pos);
+  return pos === src.length || after === 9 || after === 10 || after === 32;
+}
+
+/** @hot */
+function startsIndentedCode(src: string): boolean {
+  let width = 0;
+  for (let i = 0; i < src.length; i++) {
+    const code = src.charCodeAt(i);
+    if (code === 32) width++;
+    else if (code === 9) width += 4;
+    else return width >= 4;
+  }
+  return false;
+}
+
+/** @hot */
+function endsWithBlankLine(src: string, start: number, end: number): boolean {
+  while (end > start && (src.charCodeAt(end - 1) === 9 || src.charCodeAt(end - 1) === 32)) end--;
+  if (src.charCodeAt(--end) !== 10) return false;
+  while (end > start && (src.charCodeAt(end - 1) === 9 || src.charCodeAt(end - 1) === 32)) end--;
+  return end > start && src.charCodeAt(end - 1) === 10;
+}
+
+/** @hot */
+function hasTwoLineFeeds(src: string): boolean {
+  let seen = false;
+  for (let i = 0; i < src.length; i++) {
+    const code = src.charCodeAt(i);
+    if (code === 10) {
+      if (seen) return true;
+      seen = true;
+    } else if (code === 13 || code === 0x2028 || code === 0x2029) {
+      seen = false;
+    }
+  }
+  return false;
+}
+
 /**
  * Tokenizer
  */
@@ -589,7 +656,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
       const list: Tokens.List = createList('', isordered, start, false, []);
 
-      let endsWithBlankLine = false;
+      let previousBlankLine = false;
       // Check if current bullet point can start a new List Item
       while (offset < src.length) {
         let endEarly = false;
@@ -638,14 +705,10 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         }
 
         if (!endEarly) {
-          const nextBulletRegex = this.rules.other.nextBulletRegex(indent);
+          const maxIndent = Math.max(0, Math.min(3, indent - 1));
+          const pedantic = !!this.options.pedantic;
           const hrRegex = this.rules.other.hrRegex(indent);
-          const fencesBeginRegex = this.rules.other.fencesBeginRegex(indent);
-          const headingBeginRegex = this.options.pedantic
-            ? this.rules.other.pedanticHeadingBeginRegex(indent)
-            : this.rules.other.headingBeginRegex(indent);
           const htmlBeginRegex = this.rules.other.htmlBeginRegex(indent);
-          const blockquoteBeginRegex = this.rules.other.blockquoteBeginRegex(indent);
 
           // A lazy line continues a paragraph, so it is not checked for the start of a block
           let lineIsLazy = false;
@@ -664,28 +727,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               nextLineWithoutTabs = nextLine.replace(this.rules.other.leadingSpaceTab, whitespace => expandTabs(whitespace));
             }
 
-            // End list item if found code fences
-            if (fencesBeginRegex.test(nextLine)) {
-              break;
-            }
-
-            // End list item if found start of new heading
-            if (headingBeginRegex.test(nextLine)) {
-              break;
-            }
-
-            // End list item if found start of html block
-            if (htmlBeginRegex.test(nextLine)) {
-              break;
-            }
-
-            // End list item if found start of blockquote
-            if (blockquoteBeginRegex.test(nextLine)) {
-              break;
-            }
-
-            // End list item if found start of new bullet
-            if (nextBulletRegex.test(nextLine)) {
+            if (startsListInterrupt(nextLine, maxIndent, pedantic, true) || htmlBeginRegex.test(nextLine)) {
               break;
             }
 
@@ -719,13 +761,10 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               }
 
               // paragraph continuation unless last line was a different block level element
-              if (lastBlock.replace(this.rules.other.tabCharGlobal, '    ').search(this.rules.other.nonSpaceChar) >= 4) { // indented code block
+              if (startsIndentedCode(lastBlock)) { // indented code block
                 break;
               }
-              if (fencesBeginRegex.test(lastBlock)) {
-                break;
-              }
-              if (headingBeginRegex.test(lastBlock)) {
+              if (startsListInterrupt(lastBlock, maxIndent, pedantic, false)) {
                 break;
               }
               if (htmlBeginRegex.test(lastBlock)) {
@@ -765,15 +804,15 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
         // The loops above appended a '\n' the source may not have had. It could
         // only land on the item that exhausts src, whose raw is trimmed below,
-        // and after which nothing reads endsWithBlankLine
+        // and after which nothing reads the blank line flag
         const raw = sourceText(src, itemStart, offset);
 
         if (!list.loose) {
           // If the previous item ended with a blank line, the list is loose
-          if (endsWithBlankLine) {
+          if (previousBlankLine) {
             list.loose = true;
-          } else if (this.rules.other.doubleBlankLine.test(raw)) {
-            endsWithBlankLine = true;
+          } else if (endsWithBlankLine(src, itemStart, offset)) {
+            previousBlankLine = true;
           }
         }
 
@@ -784,8 +823,8 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       const lastItem = list.items.at(-1);
       if (!lastItem) return;
       const lastItemStart = offset - lastItem.raw.length;
-      lastItem.raw = lastItem.raw.trimEnd();
-      lastItem.text = lastItem.text.trimEnd();
+      lastItem.raw = sourceText(lastItem.raw, 0, trimEndOffset(lastItem.raw, 0, lastItem.raw.length));
+      lastItem.text = sourceText(lastItem.text, 0, trimEndOffset(lastItem.text, 0, lastItem.text.length));
       list.raw = sourceText(src, listStart, lastItemStart + lastItem.raw.length);
 
       // Item child tokens handled here at end because we needed to have the final item to trim it first
@@ -795,14 +834,16 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       for (const item of list.items) {
         this.lexer.state.top = false;
         queueStarts.push(this.lexer.inlineQueue.length);
-        item.tokens = this.lexer.blockTokens(item.text, []);
+        this.lexer.blockTokens(item.text, item.tokens);
 
         if (!list.loose) {
-          // Check if list should be loose
-          const spacers = item.tokens.filter(t => t.type === 'space');
-          const hasMultipleLineBreaks = spacers.length > 0 && spacers.some(t => this.rules.other.anyLine.test(t.raw));
-
-          list.loose = hasMultipleLineBreaks;
+          for (let i = 0; i < item.tokens.length; i++) {
+            const token = item.tokens[i];
+            if (token.type === 'space' && hasTwoLineFeeds(token.raw)) {
+              list.loose = true;
+              break;
+            }
+          }
         }
       }
 
@@ -826,7 +867,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
           const taskRaw = this.rules.other.listTaskCheckbox.exec(item.raw);
           if (taskRaw) {
-            const checkboxToken: Tokens.Checkbox = createCheckbox(taskRaw[0] + ' ', taskRaw[0] !== '[ ]');
+            const checkboxToken: Tokens.Checkbox = createCheckbox(taskRaw[0] + ' ', taskRaw[0].charCodeAt(1) !== 32);
             item.checked = checkboxToken.checked;
             if (list.loose) {
               if (item.tokens[0] && ['paragraph', 'text'].includes(item.tokens[0].type) && 'tokens' in item.tokens[0] && item.tokens[0].tokens) {
