@@ -208,9 +208,9 @@ export function escapeHtmlEntities(html: string, encode?: boolean) {
   let start = 0;
   for (let i = 0; i < html.length; i++) {
     const code = html.charCodeAt(i);
-    if (code > 62) continue;
-    const replacement = getEscapeReplacement(code);
-    if (!replacement) continue;
+    // All five escapable ASCII characters lie between space and '?'.
+    const bit = code - 32;
+    if ((bit >>> 0) > 30 || !(0x500000c4 & (1 << bit))) continue;
     if (code === 38 && !encode) {
       const end = htmlEntityEnd(html, i + 1);
       if (end >= 0) {
@@ -218,7 +218,7 @@ export function escapeHtmlEntities(html: string, encode?: boolean) {
         continue;
       }
     }
-    result += sourceText(html, start, i) + replacement;
+    result += sourceText(html, start, i) + getEscapeReplacement(code);
     start = i + 1;
   }
   return start ? result + sourceText(html, start, html.length) : html;
