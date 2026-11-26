@@ -37,18 +37,16 @@ export function decodeNumericCharacterReferences(text: string) {
   }
   // A decoded character must not join its neighbours into a new reference,
   // so every `&` that is not already one is escaped here.
-  return text.replace(other.numericCharacterReferenceOrAmpersand, decodeReferenceOrAmpersand);
-}
-
-function decodeReferenceOrAmpersand(_match: string, dec: string | undefined, hex: string | undefined) {
-  if (dec === undefined && hex === undefined) {
-    return '&amp;';
-  }
-  const code = dec === undefined ? Number.parseInt(hex!, 16) : Number.parseInt(dec, 10);
-  if (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) {
-    return '�';
-  }
-  return code === 38 ? '&amp;' : String.fromCodePoint(code);
+  return text.replace(other.numericCharacterReferenceOrAmpersand, (ref: string, dec?: string, hex?: string) => {
+    if (dec === undefined && hex === undefined) {
+      return '&amp;';
+    }
+    const code = dec === undefined ? Number.parseInt(hex!, 16) : Number.parseInt(dec, 10);
+    if (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) {
+      return '�';
+    }
+    return code === 38 ? '&amp;' : String.fromCodePoint(code);
+  });
 }
 
 export function cleanUrl(href: string) {
