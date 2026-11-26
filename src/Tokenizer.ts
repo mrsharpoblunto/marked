@@ -16,6 +16,7 @@ import {
   decodeNumericCharacterReferences,
   trimTrailingBlankLines,
   execAt,
+  testCharacterAt,
   sourceText,
   trimStartOffset,
   trimEndOffset,
@@ -29,12 +30,24 @@ import type { Links, Tokens, Token } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
 
 /** @hot */
-function countCodePoints(text: string) {
-  let count = 0;
-  for (let i = 0; i < text.length; i++, count++) {
-    if (text.codePointAt(i)! > 0xffff) i++;
+function punctuationBeforeDelimiter(src: string, offset: number, width: number, rules: Rules): boolean {
+  if (offset < 0 || offset >= src.length) return false;
+  const code = src.charCodeAt(offset);
+  if (code <= 127) {
+    if (code === 42 || code === 95) return width === 1;
+    return (code >= 9 && code <= 13) || (code >= 32 && code <= 47) || (code >= 58 && code <= 64)
+      || (code >= 91 && code <= 96) || (code >= 123 && code <= 126);
   }
-  return count;
+  return testCharacterAt(rules.inline.punctuation, src, offset, width, rules.cursor?.inline.punctuation);
+}
+
+/** @hot */
+function alphaNumericAt(src: string, offset: number, width: number, rules: Rules): boolean {
+  const code = src.charCodeAt(offset);
+  if (code <= 127 && width === 1) {
+    return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+  }
+  return testCharacterAt(rules.other.unicodeAlphaNumeric, src, offset, width, rules.cursor?.other.unicodeAlphaNumeric);
 }
 
 /**
@@ -1325,13 +1338,15 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   emStrongAt(src: string, maskedSrc: string, prevChar: string, offset: number, lastPossibleEmStrongCloserIndex: number): Tokens.Em | Tokens.Strong | undefined {
     let match = execAt(this.rules.inline.emStrongLDelim, src, offset, this.rules.cursor?.inline.emStrongLDelim);
     if (!match) return;
-    if (!match[1] && !match[2] && !match[3] && !match[4]) return;
-
-    const delimChar = match[0][0];
+    const following = match[1] || match[2] || match[3] || match[4];
+    if (!following) return;
+    const delimiter = match[0].charCodeAt(0);
+    const star = delimiter === 42;
+    if (!star && delimiter !== 95) return;
     // A mid-run opener (for example the second star of an unmatched `**`) must
     // only pair with a delimiter that can only close, otherwise it steals the
     // opener of a later span (`**a*b*c` must be `**a<em>b</em>c`).
-    const midRun = prevChar === delimChar;
+    const midRun = prevChar.length === 1 && prevChar.charCodeAt(0) === delimiter;
 
     // The start of this delimiter run may already be behind src, either taken
     // as text after the whole run failed to match or used to close an earlier
@@ -1339,46 +1354,47 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     // Pedantic follows markdown.pl, which has no such rules.
     const srcStart = maskedSrc.length - src.length + offset;
     let runStart = srcStart;
-    while (!this.options.pedantic && runStart > 0 && maskedSrc[runStart - 1] === delimChar) {
+    while (!this.options.pedantic && runStart > 0 && maskedSrc.charCodeAt(runStart - 1) === delimiter) {
       runStart--;
     }
     const prevUnit = maskedSrc.charCodeAt(runStart - 1);
     const prevWidth = prevUnit >= 0xdc00 && prevUnit <= 0xdfff && maskedSrc.codePointAt(runStart - 2)! > 0xffff
       ? 2
       : 1;
-    const runPrevChar = runStart > 0 ? maskedSrc.slice(runStart - prevWidth, runStart) : '';
-    // The other delimiter character counts as punctuation here (`_**a*`, `*_#_`)
-    const runPrevPunct = runPrevChar === '*' || runPrevChar === '_' || !!this.rules.inline.punctuation.exec(runPrevChar);
-    if (runStart < srcStart) {
-      prevChar = runPrevChar;
+    const previousStart = runStart - prevWidth;
+    const runPrevPunct = punctuationBeforeDelimiter(maskedSrc, previousStart, prevWidth, this.rules);
+    const startedBeforeOffset = runStart < srcStart;
+    const prevPunct = startedBeforeOffset ? runPrevPunct : punctuationBeforeDelimiter(prevChar, 0, prevChar.length, this.rules);
+
+    // An underscore cannot open between letters or numbers.
+    if (match[4]) {
+      if (startedBeforeOffset) {
+        if (runStart > 0 && alphaNumericAt(maskedSrc, previousStart, prevWidth, this.rules)) return;
+      } else if (prevChar.length === 1
+        ? alphaNumericAt(prevChar, 0, 1, this.rules)
+        : this.rules.other.unicodeAlphaNumeric.test(prevChar)) {
+        return;
+      }
     }
-    const prevPunct = runStart < srcStart
-      ? runPrevPunct
-      : prevChar === '*' || prevChar === '_' || !!this.rules.inline.punctuation.exec(prevChar);
 
-    // _ can't be between two alphanumerics. \p{L}\p{N} includes non-english alphabet/numbers as well
-    if (match[4] && prevChar.match(this.rules.other.unicodeAlphaNumeric)) return;
-
-    const nextChar = match[1] || match[3] || '';
-
-    if (!nextChar || !prevChar || prevPunct) {
-      // The delimiter rules count Unicode code points.
-      const lLength = countCodePoints(match[0]) - 1;
+    const punctAfter = !!(match[1] || match[3]);
+    const hasPrevious = startedBeforeOffset ? runStart > 0 : prevChar.length > 0;
+    if (!punctAfter || !hasPrevious || prevPunct) {
+      const lLength = match[0].length - following.length;
       let rDelim, rLength, delimTotal = lLength, midDelimTotal = 0;
 
       // Rules 9-10 count the whole run, and also apply when the opener could
       // close as well (`a*b**`, where `*` is both left- and right-flanking).
       const runLength = srcStart - runStart + lLength;
-      const openerCanClose = !this.options.pedantic && !isStringWhitespace(runPrevChar.charCodeAt(0)) && runStart > 0
-        && (!!nextChar || (delimChar === '*' && !runPrevPunct));
-      if (delimChar !== '*' && delimChar !== '_') return;
-      const closerRule = delimChar === '*' ? this.rules.inline.emStrongRDelimAst : this.rules.inline.emStrongRDelimUnd;
+      const openerCanClose = !this.options.pedantic && !isStringWhitespace(prevUnit) && runStart > 0
+        && (punctAfter || (star && !runPrevPunct));
+      const closerRule = star ? this.rules.inline.emStrongRDelimAst : this.rules.inline.emStrongRDelimUnd;
       const emStrongCloserWindowStart = maskedSrc.length - src.length + offset + lLength;
       if (lastPossibleEmStrongCloserIndex < emStrongCloserWindowStart) return;
       // An emStrongMask hook can return a string with a different length.
       const scanStart = Math.max(0, emStrongCloserWindowStart);
       const lastCloser = lastPossibleEmStrongCloserIndex - emStrongCloserWindowStart + scanStart;
-      const endReg = startCloserScan(closerRule, maskedSrc, scanStart, delimChar === '*' ? this.rules.cursor?.inline.star : this.rules.cursor?.inline.underscore);
+      const endReg = startCloserScan(closerRule, maskedSrc, scanStart, star ? this.rules.cursor?.inline.star : this.rules.cursor?.inline.underscore);
 
       while ((match = endReg.exec(maskedSrc)) !== null) {
         if (match.index > lastCloser) break;
@@ -1386,7 +1402,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
         if (!rDelim) continue; // skip single * in __abc*abc__
 
-        rLength = countCodePoints(rDelim);
+        rLength = rDelim.length;
 
         if (match[3] || match[4]) { // found another Left Delim
           delimTotal += rLength;
@@ -1489,7 +1505,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
     if (!nextChar || !prevChar || this.rules.inline.punctuation.exec(prevChar)) {
       // unicode Regex counts emoji as 1 char; spread into array for proper count
-      const lLength = countCodePoints(match[0]) - 1;
+      const lLength = match[0].charCodeAt(1) === 126 ? 2 : 1;
       let rDelim, rLength, delimTotal = lLength;
 
       const closerRule = this.rules.inline.delRDelim;
@@ -1506,7 +1522,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
         if (!rDelim) continue;
 
-        rLength = countCodePoints(rDelim);
+        rLength = rDelim.length;
 
         if (rLength !== lLength) continue;
 

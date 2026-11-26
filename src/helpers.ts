@@ -52,7 +52,7 @@ function prepareRules<K extends string>(keys: readonly K[], rules: Record<K, Reg
 }
 
 const blockKeys = ['code', 'fences', 'heading', 'blockquote', 'list', 'hr', 'html', 'def', 'table', 'lheading', 'paragraph', 'text'] as const;
-const inlineKeys = ['code', 'tag', 'autolink', 'escape', 'link', 'reflink', 'nolink', 'emStrongLDelim', 'br', 'delLDelim', 'url', 'text'] as const;
+const inlineKeys = ['code', 'tag', 'autolink', 'escape', 'link', 'reflink', 'nolink', 'emStrongLDelim', 'br', 'delLDelim', 'url', 'text', 'punctuation'] as const;
 const preparedBlock = {
   normal: prepareRules(blockKeys, block.normal),
   gfm: prepareRules(blockKeys, block.gfm),
@@ -103,6 +103,7 @@ const preparedOther = {
   htmlBegin: prepareRule(other.htmlBeginRegex(4)),
   tableHeader: prepareRule(other.tableHeader),
   textIndentedContinuation: prepareRule(other.textIndentedContinuation),
+  unicodeAlphaNumeric: prepareRule(other.unicodeAlphaNumeric),
 };
 
 export interface PreparedRules {
@@ -131,6 +132,18 @@ export function execAt(rule: RegExp, src: string, offset: number, prepared: Curs
   if (!sticky) return null;
   sticky.lastIndex = offset;
   return sticky.exec(src);
+}
+
+/** @hotIgnore User adapter: one character string per custom rule test. */
+function testUserCharacter(rule: RegExp, src: string, offset: number, width: number): boolean {
+  return rule.test(src.slice(offset, offset + width));
+}
+
+/** @hot */
+export function testCharacterAt(rule: RegExp, src: string, offset: number, width: number, prepared: CursorRule | undefined): boolean {
+  if (prepared?.original !== rule || !prepared.sticky) return testUserCharacter(rule, src, offset, width);
+  prepared.sticky.lastIndex = offset;
+  return prepared.sticky.test(src);
 }
 
 /** @hotIgnore User adapter: at most two RegExp instances and one record per custom closer rule. */
