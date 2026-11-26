@@ -167,6 +167,34 @@ function isLabelEndInsideToken(src: string, label: string, labelStart: number, r
   return false;
 }
 
+/** @hot */
+function listMarkerEnd(src: string, marker: number, ordered: boolean, pedantic: boolean): number {
+  let end = 0;
+  while (end < 3 && src.charCodeAt(end) === 32) end++;
+
+  if (ordered) {
+    const start = end;
+    let code = src.charCodeAt(end);
+    while (code >= 48 && code <= 57 && end - start < 9) {
+      code = src.charCodeAt(++end);
+    }
+    if (end === start || code !== marker) return 0;
+  } else {
+    const code = src.charCodeAt(end);
+    if (pedantic ? code !== 42 && code !== 43 && code !== 45 : code !== marker) return 0;
+  }
+
+  end++;
+  const next = src.charCodeAt(end);
+  return end === src.length || next === 9 || next === 10 || next === 32 ? end : 0;
+}
+
+/** @hot */
+function lineEnd(src: string, start: number): number {
+  const end = src.indexOf('\n', start);
+  return end === -1 ? src.length : end;
+}
+
 /**
  * Tokenizer
  */
@@ -404,7 +432,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   list(src: string): Tokens.List | undefined {
-    let cap = this.rules.block.list.exec(src);
+    const cap = this.rules.block.list.exec(src);
     if (cap) {
       // Inside a list item, paragraph lines are lexed as text tokens, so a list after one would
       // interrupt the paragraph. Only a non-empty list starting with a bullet or 1 can do that
@@ -416,8 +444,8 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       // src is only consumed from the front, so every raw below is a slice of
       // listSrc rather than a string built up line by line
       const listSrc = src;
-      const taken = () => listSrc.length - src.length;
-      let bull = cap[1].trim();
+      const bull = cap[1].trim();
+      const marker = bull.charCodeAt(bull.length - 1);
       const isordered = bull.length > 1;
 
       const list: Tokens.List = {
@@ -429,36 +457,29 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         items: [],
       };
 
-      bull = isordered ? `\\d{1,9}\\${bull.slice(-1)}` : `\\${bull}`;
-
-      if (this.options.pedantic) {
-        bull = isordered ? bull : '[*+-]';
-      }
-
-      // Get next list item
-      const itemRegex = this.rules.other.listItemRegex(bull);
       let endsWithBlankLine = false;
       // Check if current bullet point can start a new List Item
       while (src) {
         let endEarly = false;
         let itemContents = '';
-        if (!(cap = itemRegex.exec(src))) {
+        const bulletIndent = listMarkerEnd(src, marker, isordered, !!this.options.pedantic);
+        if (bulletIndent === 0) {
           break;
         }
 
-        if (this.rules.block.hr.test(src)) { // End list if bullet was actually HR (possibly move into itemRegex?)
+        if (this.rules.block.hr.test(src)) {
           break;
         }
 
-        const itemStart = taken();
-        src = src.substring(cap[0].length);
+        const itemStart = listSrc.length - src.length;
+        const firstLineEnd = lineEnd(src, bulletIndent);
+        const firstLine = src.slice(bulletIndent, firstLineEnd);
+        src = src.substring(firstLineEnd + 1);
 
-        const firstLine = cap[2].split('\n', 1)[0];
-        const bulletIndent = cap[1].length;
         let line = this.options.pedantic
           ? expandTabs(firstLine, bulletIndent)
           : firstLine.replace(this.rules.other.leadingSpaceTab, whitespace => expandTabs(whitespace, bulletIndent));
-        let nextLine = src.split('\n', 1)[0];
+        let nextLine = '';
         let blankLine = !line.trim();
 
         let indent = 0;
@@ -474,7 +495,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           indent += bulletIndent;
         }
 
-        if (blankLine && this.rules.other.blankLine.test(nextLine)) { // Items begin with at most one blank line
+        if (blankLine && this.rules.other.blankLine.test(nextLine = src.slice(0, lineEnd(src, 0)))) { // Items begin with at most one blank line
           src = src.substring(nextLine.length + 1);
           endEarly = true;
         }
@@ -494,7 +515,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
           // Check if following lines should be included in List Item
           while (src) {
-            const rawLine = src.split('\n', 1)[0];
+            const rawLine = src.slice(0, lineEnd(src, 0));
             let nextLineWithoutTabs;
             nextLine = rawLine;
 
@@ -608,7 +629,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         // The loops above appended a '\n' the source may not have had. It could
         // only land on the item that exhausts src, whose raw is trimmed below,
         // and after which nothing reads endsWithBlankLine
-        const raw = listSrc.slice(itemStart, taken());
+        const raw = listSrc.slice(itemStart, listSrc.length - src.length);
 
         if (!list.loose) {
           // If the previous item ended with a blank line, the list is loose
@@ -629,7 +650,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         });
       }
 
-      // Do not consume newlines at end of final item. Alternatively, make itemRegex *start* with any newlines to simplify/speed up endsWithBlankLine logic
+      // Do not consume newlines at end of final item.
       const lastItem = list.items.at(-1);
       if (lastItem) {
         lastItem.raw = lastItem.raw.trimEnd();
@@ -638,7 +659,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         // not a list since there were no items
         return;
       }
-      list.raw = listSrc.slice(0, taken()).trimEnd();
+      list.raw = listSrc.slice(0, listSrc.length - src.length).trimEnd();
 
       // Item child tokens handled here at end because we needed to have the final item to trim it first
       // First pass: tokenize items and finalize list.loose from spacers before placing checkboxes
