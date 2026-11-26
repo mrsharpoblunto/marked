@@ -4,11 +4,15 @@ import { _Tokenizer } from './Tokenizer.ts';
 import { _defaults } from './defaults.ts';
 import { other, block, inline, type Rules } from './rules.ts';
 import { callMaskHook, hookSlots } from './HookDispatch.ts';
-import { execAt, normalizeLabel, preparedLexerRules, scanCloserHints, scanInlineRuns, scanWindowHints, sourceText } from './helpers.ts';
+import { execAt, normalizeLabel, preparedLexerRules, scanCloserHints, scanInlineRuns, sourceText } from './helpers.ts';
 import type { CloserHints, InlineRuns } from './helpers.ts';
+import { copyInlineCodes, inlineMaskText, maskBlocks, maskEscapes, maskReferences } from './InlineMask.ts';
 import type { Token, TokensList, Tokens } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
 
+const standardReferenceMask = inline.normal.reflinkSearch;
+const standardEscapeMask = inline.normal.anyPunctuationOutsideCode;
+const standardBlockMask = inline.normal.blockSkip;
 const standardNoDelCloser = inline.normal.delRDelim;
 
 const tokenizerFlags = {
@@ -147,9 +151,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   #closers = { star: -1, underscore: -1, tilde: -1 };
   #runTables: InlineRuns[] = [];
   #runDepth = 0;
-  #activeRuns: InlineRuns | undefined;
-  #activeOffset = 0;
-  #blockMasks: number[] | undefined;
+  #userMaskRules = false;
+  #userDelimiters = false;
   #maskHook: ((src: string) => string) | undefined;
   #extensions: Pick<NonNullable<MarkedOptions['extensions']>, 'block' | 'inline' | 'startBlock' | 'startInline'> | null | undefined;
 
@@ -213,6 +216,12 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         if (rules.block[name] !== rules.cursor!.block[name].original) this.#replaced |= tokenizerFlags[name];
       }
     }
+    this.#userMaskRules = rules.inline.reflinkSearch !== standardReferenceMask
+      || rules.inline.anyPunctuationOutsideCode !== standardEscapeMask || rules.inline.blockSkip !== standardBlockMask;
+    this.#userDelimiters = !!this.#maskHook || !!(this.#replaced & (tokenizerFlags.emStrong | tokenizerFlags.del))
+      || rules.cursor!.inline.star.original !== rules.inline.emStrongRDelimAst
+      || rules.cursor!.inline.underscore.original !== rules.inline.emStrongRDelimUnd
+      || (rules.inline.delRDelim !== standardNoDelCloser && rules.cursor!.inline.tilde?.original !== rules.inline.delRDelim);
     this.tokenizer.rules = rules;
   }
 
@@ -595,96 +604,65 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     // `'[a](b'.repeat(n)`. Extension tokenizers can pass generated text to
     // nested runs, so each run must check its own source.
     const prevLinkParenPossible = this.state.linkParenPossible;
-    const prevRuns = this.#activeRuns;
-    const prevOffset = this.#activeOffset;
-    this.#activeRuns = undefined;
-    this.#activeOffset = 0;
     this.state.linkParenPossible = src.includes(')');
     try {
       return this.#inlineTokensInner(src, tokens);
     } finally {
       // Restore the outer run's flag for the rest of its loop.
       this.state.linkParenPossible = prevLinkParenPossible;
-      this.#activeRuns = prevRuns;
-      this.#activeOffset = prevOffset;
-    }
-  }
-
-  /** @internal */
-  inlineChildren(text: string, offset: number): Token[] {
-    const runs = this.#activeRuns;
-    if (!runs?.share || text.includes('[') || text.includes('<') || text.includes('\\') || text.includes('`')) {
-      return this.inlineTokens(text);
-    }
-    const start = this.#activeOffset;
-    const first = start + offset;
-    const end = first + text.length;
-    const masks = runs.masks;
-    for (let i = 0; i < masks.length && masks[i] < end; i += 2) {
-      if (masks[i + 1] > first) return this.inlineTokens(text);
-    }
-    const hints = this.#closers;
-    const { star, underscore, tilde } = hints;
-    this.#activeOffset = first;
-    scanWindowHints(runs, first, end, hints);
-    try {
-      return this.#tokenizeInlines(text, runs.source, [], runs);
-    } finally {
-      this.#activeOffset = start;
-      hints.star = star;
-      hints.underscore = underscore;
-      hints.tilde = tilde;
     }
   }
 
   /** @hot */
   #inlineTokensInner(src: string, tokens: Token[]): Token[] {
-    // The masked source is only read by emStrong and del, which need a *, _ or
-    // ~ to start. Skip building it for a run without one, unless a custom
-    // tokenizer or an emStrongMask hook may read it.
     const hasDelimiter = src.includes('*') || src.includes('_') || src.includes('~');
-    const rules = this.tokenizer.rules;
-    const cursor = rules.cursor?.inline;
-    const fullMask = !!this.#maskHook || !!(this.#replaced & (tokenizerFlags.emStrong | tokenizerFlags.del))
-      || cursor?.star.original !== rules.inline.emStrongRDelimAst
-      || cursor?.underscore.original !== rules.inline.emStrongRDelimUnd
-      || (rules.inline.delRDelim !== standardNoDelCloser && cursor?.tilde?.original !== rules.inline.delRDelim);
-    if (!hasDelimiter) {
-      return this.#tokenizeInlines(src, fullMask ? this.#maskSrc(src, undefined, true) : src, tokens, undefined);
-    }
-
+    if (!hasDelimiter && !this.#userDelimiters) return this.#tokenizeInlines(src, src, tokens, undefined);
     const hints = this.#closers;
     const { star, underscore, tilde } = hints;
     const depth = this.#runDepth++;
-    let runs: InlineRuns | undefined;
-    if (!fullMask) {
-      runs = this.#runTables[depth] ??= { entries: new Int32Array(0), length: 0, gfm: false, source: '', masks: [], share: false };
-      runs.length = 0;
-      runs.share = false;
-      runs.masks.length = 0;
-      runs.gfm = !!this.options.gfm && !this.options.pedantic;
-    }
+    const runs = this.#runTables[depth] ??= {
+      entries: new Int32Array(0), length: 0, gfm: false,
+      mask: { codes: new Uint16Array(0), length: 0, changed: false },
+    };
     try {
-      const maskedSrc = this.#maskSrc(src, hints, fullMask, runs);
-      if (runs) {
-        runs.source = maskedSrc;
-        runs.share = maskedSrc === src;
+      const rules = this.tokenizer.rules;
+      let userMask: string | undefined;
+      if (this.#userMaskRules) {
+        userMask = this.#applyUserMaskRules(src);
+      } else {
+        const mask = runs.mask;
+        copyInlineCodes(mask, src);
+        if (src.includes('[')) maskReferences(mask, src, 0, src.length, rules, this.tokens.links);
+        if (src.includes('\\') || src.includes('`')) maskEscapes(mask, src);
+        if (src.includes('[') || src.includes('`') || src.includes('<')) maskBlocks(mask, src, rules);
       }
-      this.#activeRuns = runs;
-      return this.#tokenizeInlines(src, maskedSrc, tokens, runs);
+      if (this.#userDelimiters || this.#userMaskRules) {
+        const masked = this.#maskedForUser(src, runs, userMask);
+        if (hasDelimiter) scanCloserHints(masked, hints, undefined);
+        else hints.star = hints.underscore = hints.tilde = -1;
+        return this.#tokenizeInlines(src, masked, tokens, undefined);
+      }
+      runs.gfm = !!this.options.gfm && !this.options.pedantic;
+      scanInlineRuns(src, hints, runs);
+      return this.#tokenizeInlines(src, src, tokens, runs);
     } finally {
       this.#runDepth = depth;
-      if (runs) runs.source = '';
-      // A nested inline pass must restore its caller's closer positions.
       hints.star = star;
       hints.underscore = underscore;
       hints.tilde = tilde;
     }
   }
 
+  /** @hotIgnore User adapter: one masked string and one hook call per inline run. */
+  #maskedForUser(src: string, runs: InlineRuns, masked: string | undefined): string {
+    const mask = runs.mask;
+    const input = masked ?? (mask.changed ? inlineMaskText(mask, 0, mask.length) : src);
+    return this.#maskHook ? callMaskHook(this.#maskHook, this, input) : input;
+  }
+
   /** @hot */
   #tokenizeInlines(src: string, maskedSrc: string, tokens: Token[], runs: InlineRuns | undefined): Token[] {
-    const base = runs ? this.#activeOffset : maskedSrc.length - src.length;
+    const base = maskedSrc.length - src.length;
     let keepPrevChar = false;
     let prevChar = '';
     let offset = 0;
@@ -867,55 +845,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     return tokens;
   }
 
-  /**
-   * Mask links, code spans, raw html and autolinks. blockSkip finds every
-   * `<...>` run, but only real raw html and autolinks take precedence over
-   * emphasis: other text in angle brackets, like `<*name*>`, stays unmasked so
-   * emphasis can open and close in it. A tag may also run past the first `>`,
-   * as in `<a title=">">`, so mask the whole tag.
-   */
-  /** @hot */
-  #maskBlocks(src: string, hints: CloserHints | undefined, fullMask: boolean, runs?: InlineRuns): string {
-    const { blockSkip, tag, autolink } = this.tokenizer.rules.inline;
-    const cursor = this.tokenizer.rules.cursor?.inline;
-    let ranges = runs?.masks ?? this.#blockMasks;
-    if (ranges) ranges.length = 0;
-    let match: RegExpExecArray | null;
-    blockSkip.lastIndex = 0;
-    while ((match = blockSkip.exec(src))) {
-      const start = match.index + (match[2] ? match[2].length : 0);
-      let end = match.index + match[0].length;
-      if (src.charCodeAt(start) === 60) {
-        const html = execAt(tag, src, start, cursor?.tag) || execAt(autolink, src, start, cursor?.autolink);
-        if (!html) {
-          blockSkip.lastIndex = start + 1;
-          continue;
-        }
-        end = start + html[0].length;
-        blockSkip.lastIndex = end;
-      }
-      // The recognized blocks have punctuation at both ends. If there is
-      // no delimiter inside, the original span has the same flanking effect.
-      if (!fullMask && !hasInlineDelimiter(src, start, end)) continue;
-      if (!ranges) this.#blockMasks = ranges = [];
-      ranges.push(start, end);
-    }
-    if (hints && !fullMask) {
-      scanInlineRuns(src, hints, ranges, runs);
-      // With no closer outside the masked blocks, the tokenizer has no
-      // reason to pass the source to a right-delimiter expression.
-      if (runs || (hints.star < 0 && hints.underscore < 0 && hints.tilde < 0)) return src;
-    }
-    if (!ranges?.length) return src;
-    return materializeUserBlockMask(src, ranges);
-  }
-
-  /**
-   * Mask links, code, html and escapes so emStrong and del do not see their
-   * delimiters inside them.
-   */
-  /** @hot */
-  #maskSrc(src: string, hints: CloserHints | undefined, fullMask: boolean, runs?: InlineRuns): string {
+  /** @hotIgnore User adapter: up to three full-length mask strings for replaced inline rules. */
+  #applyUserMaskRules(src: string): string {
     // String with links masked to avoid interference with em and strong
     let maskedSrc = src;
 
@@ -954,11 +885,26 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       maskedSrc = maskedSrc.replace(this.tokenizer.rules.inline.anyPunctuationOutsideCode, maskCodeAndEscapes);
     }
 
-    maskedSrc = this.#maskBlocks(maskedSrc, hints, fullMask, runs);
-    if (this.#maskHook) maskedSrc = callMaskHook(this.#maskHook, this, maskedSrc);
-    if (hints && fullMask) scanCloserHints(maskedSrc, hints, undefined);
-
-    return maskedSrc;
+    const { blockSkip, tag, autolink } = this.tokenizer.rules.inline;
+    const cursor = this.tokenizer.rules.cursor?.inline;
+    const ranges: number[] = [];
+    let match: RegExpExecArray | null;
+    blockSkip.lastIndex = 0;
+    while ((match = blockSkip.exec(maskedSrc))) {
+      const start = match.index + (match[2] ? match[2].length : 0);
+      let end = match.index + match[0].length;
+      if (maskedSrc.charCodeAt(start) === 60) {
+        const html = execAt(tag, maskedSrc, start, cursor?.tag) || execAt(autolink, maskedSrc, start, cursor?.autolink);
+        if (!html) {
+          blockSkip.lastIndex = start + 1;
+          continue;
+        }
+        end = start + html[0].length;
+        blockSkip.lastIndex = end;
+      }
+      ranges.push(start, end);
+    }
+    return ranges.length ? materializeUserBlockMask(maskedSrc, ranges) : maskedSrc;
   }
 
   /** @hotIgnore Output: one message and at most one Error per stalled lex. */
@@ -982,16 +928,6 @@ function appendText(token: Tokens.Text | Tokens.Paragraph, raw: string, text: st
   token.text += text;
 }
 
-/** @hot */
-function hasInlineDelimiter(source: string, start: number, end: number): boolean {
-  for (let i = start; i < end; i++) {
-    const code = source.charCodeAt(i);
-    if (code === 42 || code === 95 || code === 126) return true;
-  }
-  return false;
-}
-
-/** @hotIgnore User adapter: one effective masked string per inline run. */
 function materializeUserBlockMask(src: string, ranges: number[]): string {
   let masked = '';
   let last = 0;

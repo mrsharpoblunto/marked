@@ -1,3 +1,4 @@
+import type { InlineMask } from './InlineMask.ts';
 import { block, inline, noopTest, other } from './rules.ts';
 
 /** @hotIgnore Output: at most one string for each token field. */
@@ -376,9 +377,7 @@ export interface InlineRuns {
   entries: Int32Array;
   length: number;
   gfm: boolean;
-  source: string;
-  masks: number[];
-  share: boolean;
+  mask: InlineMask;
 }
 
 export function inlineRunAt(runs: InlineRuns, offset: number): number {
@@ -392,38 +391,33 @@ export function inlineRunAt(runs: InlineRuns, offset: number): number {
   return first * 5;
 }
 
-export function scanWindowHints(runs: InlineRuns, start: number, end: number, hints: CloserHints): void {
-  hints.star = -1;
-  hints.underscore = -1;
-  hints.tilde = -1;
-  const entries = runs.entries;
-  for (let i = inlineRunAt(runs, end) - 5; i >= 0 && entries[i] > start; i -= 5) {
-    const offset = entries[i];
-    const prev = runs.source.charCodeAt(offset - 1);
-    if (prev === 32 || prev === 9 || prev === 10 || prev === 13 || prev === 12) continue;
-    const code = entries[i + 2];
-    if (code === 42 && hints.star < 0) hints.star = offset;
-    else if (code === 95 && hints.underscore < 0) hints.underscore = offset;
-    else if (code === 126 && hints.tilde < 0) hints.tilde = offset;
-    if (hints.star >= 0 && hints.underscore >= 0 && hints.tilde >= 0) break;
-  }
-}
-
-function addInlineRun(runs: InlineRuns, src: string, start: number, end: number, code: number, before: number, after: number) {
+/** @hot */
+function addInlineRun(runs: InlineRuns, src: string, start: number, end: number, code: number): void {
   const index = runs.length;
   if (index + 5 > runs.entries.length) {
     const expanded = new Int32Array(Math.max(40, runs.entries.length * 2));
     expanded.set(runs.entries);
     runs.entries = expanded;
   }
+  const codes = runs.mask.codes;
+  const unit = codes[start - 1];
+  const width = unit >= 0xdc00 && unit <= 0xdfff && codes[start - 2] >= 0xd800 && codes[start - 2] <= 0xdbff ? 2 : 1;
   const tildeIsWord = code === 42 && runs.gfm;
   const entries = runs.entries;
   entries[index] = start;
   entries[index + 1] = end - start;
   entries[index + 2] = code;
-  entries[index + 3] = before < 0 ? 1 : delimiterClass(src, before, tildeIsWord);
-  entries[index + 4] = after < 0 ? 1 : delimiterClass(src, after, tildeIsWord);
+  entries[index + 3] = maskDelimiterClass(codes, src, start - width, tildeIsWord);
+  entries[index + 4] = maskDelimiterClass(codes, src, end, tildeIsWord);
   runs.length += 5;
+}
+
+/** @hot */
+function maskDelimiterClass(codes: Uint16Array, source: string, pos: number, tildeIsWord: boolean): number {
+  if (pos < 0 || pos >= source.length) return 0;
+  const code = codes[pos];
+  if (code === source.charCodeAt(pos)) return delimiterClass(source, pos, tildeIsWord);
+  return code === 97 ? 2 : 1;
 }
 
 export interface CloserHints {
@@ -444,47 +438,46 @@ export interface CloserHints {
  * openers are still applied in the loop (#4099).
  */
 /** @hot */
-export function scanCloserHints(src: string, hints: CloserHints, masks: number[] | undefined): void {
-  scanInlineRuns(src, hints, masks, undefined);
-}
-
-export function scanInlineRuns(src: string, hints: CloserHints, masks: number[] | undefined, runs: InlineRuns | undefined): void {
+export function scanCloserHints(src: string, hints: CloserHints, _masks: undefined): void {
   let star = -1;
   let underscore = -1;
   let tilde = -1;
-  let i = 0;
-  let range = 0;
-  let maskEnd = -1;
-  while (i < src.length) {
-    const end = masks?.[range] ?? src.length;
-    while (i < end) {
-      const code = src.charCodeAt(i);
-      if (code !== 42 && code !== 95 && code !== 126) {
-        i++;
-        continue;
-      }
-      const start = i++;
-      while (i < end && src.charCodeAt(i) === code) i++;
+  for (let i = 0; i < src.length; i++) {
+    const code = src.charCodeAt(i);
+    if (code !== 42 && code !== 95 && code !== 126) continue;
+    const start = i;
+    while (src.charCodeAt(i + 1) === code) i++;
+    if (start === 0) continue;
+    const prev = src.charCodeAt(start - 1);
+    if (prev === 32 || prev === 9 || prev === 10 || prev === 13 || prev === 12) continue;
+    if (code === 42) star = start;
+    else if (code === 95) underscore = start;
+    else tilde = start;
+  }
+  hints.star = star;
+  hints.underscore = underscore;
+  hints.tilde = tilde;
+}
 
-      if (runs) {
-        const unit = src.charCodeAt(start - 1);
-        const width = unit >= 0xdc00 && unit <= 0xdfff && src.codePointAt(start - 2)! > 0xffff ? 2 : 1;
-        addInlineRun(runs, src, start, i, code, start === maskEnd ? -1 : start - width, i !== src.length && i === end ? -1 : i);
-      }
-      if (start === 0) continue;
-      const prev = start === maskEnd ? 93 : src.charCodeAt(start - 1);
-      if (prev === 32 || prev === 9 || prev === 10 || prev === 13 || prev === 12) continue;
-      if (code === 42) {
-        star = start;
-      } else if (code === 95) {
-        underscore = start;
-      } else {
-        tilde = start;
-      }
-    }
-    if (end === src.length) break;
-    i = maskEnd = masks![range + 1];
-    range += 2;
+/** @hot */
+export function scanInlineRuns(src: string, hints: CloserHints, runs: InlineRuns): void {
+  let star = -1;
+  let underscore = -1;
+  let tilde = -1;
+  runs.length = 0;
+  const codes = runs.mask.codes;
+  for (let i = 0; i < src.length; i++) {
+    const code = codes[i];
+    if (code !== 42 && code !== 95 && code !== 126) continue;
+    const start = i;
+    while (i + 1 < src.length && codes[i + 1] === code) i++;
+    addInlineRun(runs, src, start, i + 1, code);
+    if (start === 0) continue;
+    const prev = codes[start - 1];
+    if (prev === 32 || prev === 9 || prev === 10 || prev === 13 || prev === 12) continue;
+    if (code === 42) star = start;
+    else if (code === 95) underscore = start;
+    else tilde = start;
   }
   hints.star = star;
   hints.underscore = underscore;

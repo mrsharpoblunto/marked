@@ -51,19 +51,6 @@ function orphanDelimiterEnd(runs: InlineRuns, start: number, end: number, delimi
   return start;
 }
 
-function inlineMaskCode(src: string, offset: number, masks: number[]): number {
-  let first = 0;
-  let end = masks.length >> 1;
-  while (first < end) {
-    const middle = (first + end) >> 1;
-    const range = middle * 2;
-    if (offset < masks[range]) end = middle;
-    else if (offset >= masks[range + 1]) first = middle + 1;
-    else return src.charCodeAt(masks[range]) === 92 ? 43 : offset === masks[range] ? 91 : offset + 1 === masks[range + 1] ? 93 : 97;
-  }
-  return -1;
-}
-
 function delimiterCloserType(before: number, after: number, delimiter: number, pedantic: boolean): number {
   if (after === 0) return before ? 2 : 0;
   if (before === 0) return 1;
@@ -2506,13 +2493,11 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     const srcStart = base + offset;
     const boundary = runs ? base : 0;
     const limit = runs ? base + src.length : maskedSrc.length;
-    const masks = runs?.masks;
+    const codes = runs?.mask.codes;
     let runStart = srcStart;
-    while (!this.options.pedantic && runStart > boundary && maskedSrc.charCodeAt(runStart - 1) === delimiter) {
-      if (masks?.length && inlineMaskCode(maskedSrc, runStart - 1, masks) >= 0) break;
-      runStart--;
-    }
-    const maskedPrev = masks?.length ? inlineMaskCode(maskedSrc, runStart - 1, masks) : -1;
+    while (!this.options.pedantic && runStart > boundary
+      && (codes ? codes[runStart - 1] : maskedSrc.charCodeAt(runStart - 1)) === delimiter) runStart--;
+    const maskedPrev = codes && runStart > boundary && codes[runStart - 1] !== maskedSrc.charCodeAt(runStart - 1) ? codes[runStart - 1] : -1;
     const prevUnit = maskedPrev >= 0 ? maskedPrev : maskedSrc.charCodeAt(runStart > boundary ? runStart - 1 : -1);
     const prevWidth = prevUnit >= 0xdc00 && prevUnit <= 0xdfff && maskedSrc.codePointAt(runStart - 2)! > 0xffff
       ? 2
@@ -2575,9 +2560,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           if (closerStart >= limit || closerStart - 2 > scanStart + lastCloser) break;
           if (entries[index + 2] !== delimiter) continue;
           rLength = Math.min(entries[index + 1], limit - closerStart);
-          const unit = maskedSrc.charCodeAt(closerStart - 1);
-          const width = unit >= 0xdc00 && unit <= 0xdfff && maskedSrc.codePointAt(closerStart - 2)! > 0xffff
-            && (!runs!.masks.length || inlineMaskCode(maskedSrc, closerStart - 1, runs!.masks) < 0)
+          const units = runs!.mask.codes;
+          const unit = units[closerStart - 1];
+          const width = unit >= 0xdc00 && unit <= 0xdfff && units[closerStart - 2] >= 0xd800 && units[closerStart - 2] <= 0xdbff
             ? 2
             : 1;
           const before = closerStart - width;
@@ -2608,12 +2593,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         // Create `em` if smallest delimiter has odd char count. *a***
         if (Math.min(lLength, rLength) % 2) {
           const text = sourceText(src, offset + 1, rawEnd - 1);
-          return createEm(raw, text, runs ? this.lexer.inlineChildren(text, offset + 1) : this.lexer.inlineTokens(text));
+          return createEm(raw, text, this.lexer.inlineTokens(text));
         }
 
         // Create 'strong' if smallest delimiter has even char count. **a***
         const text = sourceText(src, offset + 2, rawEnd - 2);
-        return createStrong(raw, text, runs ? this.lexer.inlineChildren(text, offset + 2) : this.lexer.inlineTokens(text));
+        return createStrong(raw, text, this.lexer.inlineTokens(text));
       }
     }
   }
@@ -2713,9 +2698,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           if (entries[index + 2] !== 126) continue;
           rLength = Math.min(entries[index + 1], limit - closerStart);
           if (rLength !== lLength) continue;
-          const unit = maskedSrc.charCodeAt(closerStart - 1);
-          const width = unit >= 0xdc00 && unit <= 0xdfff && maskedSrc.codePointAt(closerStart - 2)! > 0xffff
-            && (!runs!.masks.length || inlineMaskCode(maskedSrc, closerStart - 1, runs!.masks) < 0)
+          const units = runs!.mask.codes;
+          const unit = units[closerStart - 1];
+          const width = unit >= 0xdc00 && unit <= 0xdfff && units[closerStart - 2] >= 0xd800 && units[closerStart - 2] <= 0xdbff
             ? 2
             : 1;
           const before = closerStart - width;
@@ -2742,7 +2727,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
         // Create del token - only single ~ or double ~~ supported
         const text = sourceText(src, offset + lLength, rawEnd - lLength);
-        return createDel(raw, text, runs ? this.lexer.inlineChildren(text, offset + lLength) : this.lexer.inlineTokens(text));
+        return createDel(raw, text, this.lexer.inlineTokens(text));
       }
     }
   }
