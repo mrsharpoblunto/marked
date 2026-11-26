@@ -223,20 +223,11 @@ export function findClosingParen(str: string) {
   return -1;
 }
 
-interface EmStrongDelCloserHintFrame {
-  maskedSrc: string;
+export interface CloserHints {
   star: number;
   underscore: number;
   tilde: number;
 }
-
-/**
- * Hint stacks for inline passes currently running. Keyed by the tokenizer
- * instance so parses do not share frames. Nested `inlineTokens` calls push
- * a frame. The entry is removed when the outermost pass ends, so
- * `maskedSrc` is not retained once parsing returns (#4099).
- */
-const emStrongDelCloserHintStacks = new WeakMap<object, EmStrongDelCloserHintFrame[]>();
 
 /**
  * Last indexes of `*` / `_` runs that can close emphasis or strong, and of
@@ -249,7 +240,8 @@ const emStrongDelCloserHintStacks = new WeakMap<object, EmStrongDelCloserHintFra
  * Finding one only means "keep looking": CommonMark rules 9–10 and mid-run
  * openers are still applied in the loop (#4099).
  */
-function scanLastPossibleEmStrongDelClosers(src: string): EmStrongDelCloserHintFrame {
+/** @hot */
+export function scanCloserHints(src: string, hints: CloserHints): void {
   let star = -1;
   let underscore = -1;
   let tilde = -1;
@@ -274,67 +266,15 @@ function scanLastPossibleEmStrongDelClosers(src: string): EmStrongDelCloserHintF
       tilde = start;
     }
   }
-  return { maskedSrc: src, star, underscore, tilde };
+  hints.star = star;
+  hints.underscore = underscore;
+  hints.tilde = tilde;
 }
 
-/**
- * Scan `maskedSrc` once for the last `*` / `_` run that can close emphasis
- * or strong and the last `~` run that can close strikethrough.
- * `endEmStrongDelCloserScan` drops this frame when the inline pass ends.
- */
-/** @hot */
-export function beginEmStrongDelCloserScan(tokenizer: object, maskedSrc: string): void {
-  const frame = scanLastPossibleEmStrongDelClosers(maskedSrc);
-  const stack = emStrongDelCloserHintStacks.get(tokenizer);
-  if (stack) {
-    stack.push(frame);
-  } else {
-    emStrongDelCloserHintStacks.set(tokenizer, [frame]);
-  }
-}
-
-/**
- * Drop the closer-hint frame for the inline pass that just finished.
- * Removing the last frame drops the tokenizer's `maskedSrc` reference.
- */
-/** @hot */
-export function endEmStrongDelCloserScan(tokenizer: object): void {
-  const stack = emStrongDelCloserHintStacks.get(tokenizer);
-  if (!stack) {
-    return;
-  }
-  stack.pop();
-  if (stack.length === 0) {
-    emStrongDelCloserHintStacks.delete(tokenizer);
-  }
-}
-
-/**
- * Index in `maskedSrc` of the last `*` or `_` run that can close emphasis
- * or strong. Uses the active inline-pass scan when `maskedSrc` is that
- * pass's source; otherwise scans this string and discards the result.
- */
-/** @hot */
-export function cachedLastPossibleEmStrongCloserIndex(tokenizer: object, maskedSrc: string, delim: number): number {
-  let frame = emStrongDelCloserHintStacks.get(tokenizer)?.at(-1);
-  if (!frame || frame.maskedSrc !== maskedSrc) {
-    frame = scanLastPossibleEmStrongDelClosers(maskedSrc);
-  }
-  return delim === 42 ? frame.star : frame.underscore;
-}
-
-/**
- * Index in `maskedSrc` of the last `~` run that can close strikethrough.
- * Uses the active inline-pass scan when `maskedSrc` is that pass's
- * source; otherwise scans this string and discards the result.
- */
-/** @hot */
-export function cachedLastPossibleDelCloserIndex(tokenizer: object, maskedSrc: string): number {
-  const frame = emStrongDelCloserHintStacks.get(tokenizer)?.at(-1);
-  if (frame && frame.maskedSrc === maskedSrc) {
-    return frame.tilde;
-  }
-  return scanLastPossibleEmStrongDelClosers(maskedSrc).tilde;
+export function lastCloser(src: string, delimiter: number): number {
+  const hints = { star: -1, underscore: -1, tilde: -1 };
+  scanCloserHints(src, hints);
+  return delimiter === 42 ? hints.star : delimiter === 95 ? hints.underscore : hints.tilde;
 }
 
 export function expandTabs(line: string, indent = 0) {

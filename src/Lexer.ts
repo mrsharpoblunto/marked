@@ -2,7 +2,7 @@ import { _Tokenizer } from './Tokenizer.ts';
 import { _defaults } from './defaults.ts';
 import { other, block, inline } from './rules.ts';
 import { callMaskHook, hookSlots } from './HookDispatch.ts';
-import { beginEmStrongDelCloserScan, cachedLastPossibleDelCloserIndex, cachedLastPossibleEmStrongCloserIndex, endEmStrongDelCloserScan, execAt, normalizeLabel, sourceText } from './helpers.ts';
+import { execAt, normalizeLabel, scanCloserHints, sourceText } from './helpers.ts';
 import type { Token, TokensList, Tokens } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
 
@@ -133,6 +133,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
 
   #slots: _Tokenizer<ParserOutput, RendererOutput>;
   #replaced = 0;
+  #closers = { star: -1, underscore: -1, tilde: -1 };
   #maskHook: ((src: string) => string) | undefined;
   #extensions: Pick<NonNullable<MarkedOptions['extensions']>, 'block' | 'inline' | 'startBlock' | 'startInline'> | null | undefined;
 
@@ -534,14 +535,16 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       return this.#tokenizeInlines(src, maskedSrc, tokens);
     }
 
-    // One scan of this maskedSrc for the last emphasis, strong, and
-    // strikethrough closers, shared by every opener in the pass. Popped
-    // when the pass ends so the source is not retained (#4099).
-    beginEmStrongDelCloserScan(this.#slots, maskedSrc);
+    const hints = this.#closers;
+    const { star, underscore, tilde } = hints;
+    scanCloserHints(maskedSrc, hints);
     try {
       return this.#tokenizeInlines(src, maskedSrc, tokens);
     } finally {
-      endEmStrongDelCloserScan(this.#slots);
+      // A nested inline pass must restore its caller's closer positions.
+      hints.star = star;
+      hints.underscore = underscore;
+      hints.tilde = tilde;
     }
   }
 
@@ -621,31 +624,13 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // anywhere ahead in maskedSrc, every opener position fails identically
       // and the outer loop walks the run char-by-char, giving O(n^2) time.
       // Consume the whole run as literal text in one step.
-      if (firstCode === 42 || firstCode === 95) {
+      if (firstCode === 42 || firstCode === 95 || firstCode === 126) {
         const pos = maskedSrc.length - src.length + offset;
-        const lastCloser = cachedLastPossibleEmStrongCloserIndex(this.#slots, maskedSrc, firstCode);
+        const lastCloser = firstCode === 42 ? this.#closers.star
+          : firstCode === 95 ? this.#closers.underscore : this.#closers.tilde;
         if (lastCloser <= pos) {
           let runEnd = offset + 1;
           while (runEnd < src.length && src.charCodeAt(runEnd) === firstCode) runEnd++;
-          const raw = sourceText(src, offset, runEnd);
-          const lastToken = tokens.at(-1);
-          if (lastToken?.type === 'text' && !lastToken.escaped) {
-            lastToken.raw += raw;
-            lastToken.text += raw;
-          } else {
-            tokens.push({ type: 'text', raw, text: raw, escaped: false } as Tokens.Text);
-          }
-          offset = runEnd;
-          prevChar = raw[0];
-          keepPrevChar = true;
-          continue;
-        }
-      } else if (firstCode === 126) {
-        const pos = maskedSrc.length - src.length + offset;
-        const lastCloser = cachedLastPossibleDelCloserIndex(this.#slots, maskedSrc);
-        if (lastCloser <= pos) {
-          let runEnd = offset + 1;
-          while (runEnd < src.length && src.charCodeAt(runEnd) === 126 /* ~ */) runEnd++;
           const raw = sourceText(src, offset, runEnd);
           const lastToken = tokens.at(-1);
           if (lastToken?.type === 'text' && !lastToken.escaped) {
@@ -664,7 +649,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // em & strong
       if ((firstCode === 42 || firstCode === 95
         || (this.#replaced & tokenizerFlags.emStrong))
-        && (token = this.#slots.emStrongAt(src, maskedSrc, prevChar, offset))) {
+        && (token = this.#slots.emStrongAt(src, maskedSrc, prevChar, offset, firstCode === 42 ? this.#closers.star : this.#closers.underscore))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -691,7 +676,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       // del (gfm)
       if ((firstCode === 126
         || (this.#replaced & tokenizerFlags.del))
-        && (token = this.#slots.delAt(src, maskedSrc, prevChar, offset))) {
+        && (token = this.#slots.delAt(src, maskedSrc, prevChar, offset, this.#closers.tilde))) {
         offset += token.raw.length;
         tokens.push(token);
         continue;
@@ -725,9 +710,9 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       const cutSrc = startExtensions?.length ? clipForExtensions(startExtensions, this, src, offset) : src;
       if (token = this.#slots.inlineTextAt(cutSrc, offset)) {
         offset += token.raw.length;
-        const lastChar = token.raw.slice(-1);
-        if (lastChar !== '_') { // Track prevChar before string of ____ started
-          prevChar = lastChar;
+        const last = token.raw.length - 1;
+        if (token.raw.charCodeAt(last) !== 95) { // Keep the character before underscores.
+          prevChar = token.raw.charAt(last);
         }
         keepPrevChar = true;
         const lastToken = tokens.at(-1);

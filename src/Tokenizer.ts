@@ -14,8 +14,7 @@ import {
   trimEndOffset,
   isStringWhitespace,
   startCloserScan,
-  cachedLastPossibleEmStrongCloserIndex,
-  cachedLastPossibleDelCloserIndex,
+  lastCloser,
 } from './helpers.ts';
 import { block, inline, type Rules } from './rules.ts';
 import type { _Lexer } from './Lexer.ts';
@@ -1282,12 +1281,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   emStrong(src: string, maskedSrc: string, prevChar = ''): Tokens.Em | Tokens.Strong | undefined {
-    return this.emStrongAt(src, maskedSrc, prevChar, 0);
+    return this.emStrongAt(src, maskedSrc, prevChar, 0, lastCloser(maskedSrc, src.charCodeAt(0)));
   }
 
   /** @internal */
   /** @hot */
-  emStrongAt(src: string, maskedSrc: string, prevChar: string, offset: number): Tokens.Em | Tokens.Strong | undefined {
+  emStrongAt(src: string, maskedSrc: string, prevChar: string, offset: number, lastPossibleEmStrongCloserIndex: number): Tokens.Em | Tokens.Strong | undefined {
     let match = execAt(this.rules.inline.emStrongLDelim, src, offset);
     if (!match) return;
     if (!match[1] && !match[2] && !match[3] && !match[4]) return;
@@ -1338,7 +1337,6 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         && (!!nextChar || (delimChar === '*' && !runPrevPunct));
       if (delimChar !== '*' && delimChar !== '_') return;
       const closerRule = delimChar === '*' ? this.rules.inline.emStrongRDelimAst : this.rules.inline.emStrongRDelimUnd;
-      const lastPossibleEmStrongCloserIndex = cachedLastPossibleEmStrongCloserIndex(this, maskedSrc, delimChar.charCodeAt(0));
       const emStrongCloserWindowStart = maskedSrc.length - src.length + offset + lLength;
       if (lastPossibleEmStrongCloserIndex < emStrongCloserWindowStart) return;
       // An emStrongMask hook can return a string with a different length.
@@ -1458,12 +1456,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   del(src: string, maskedSrc: string, prevChar = ''): Tokens.Del | undefined {
-    return this.delAt(src, maskedSrc, prevChar, 0);
+    return this.delAt(src, maskedSrc, prevChar, 0, lastCloser(maskedSrc, 126));
   }
 
   /** @internal */
   /** @hot */
-  delAt(src: string, maskedSrc: string, prevChar: string, offset: number): Tokens.Del | undefined {
+  delAt(src: string, maskedSrc: string, prevChar: string, offset: number, lastPossibleDelCloserIndex: number): Tokens.Del | undefined {
     if (src.charCodeAt(offset) !== 126) return; // ~
     let match = execAt(this.rules.inline.delLDelim, src, offset);
     if (!match) return;
@@ -1476,7 +1474,6 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       let rDelim, rLength, delimTotal = lLength;
 
       const closerRule = this.rules.inline.delRDelim;
-      const lastPossibleDelCloserIndex = cachedLastPossibleDelCloserIndex(this, maskedSrc);
       const delCloserWindowStart = maskedSrc.length - src.length + offset + lLength;
       if (lastPossibleDelCloserIndex < delCloserWindowStart) return;
       // An emStrongMask hook can return a string with a different length.
