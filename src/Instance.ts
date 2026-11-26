@@ -1,5 +1,5 @@
 import { _getDefaults } from './defaults.ts';
-import { _Lexer } from './Lexer.ts';
+import { _Lexer, configureTokenizer } from './Lexer.ts';
 import { _Parser } from './Parser.ts';
 import { _Hooks } from './Hooks.ts';
 import { _Renderer } from './Renderer.ts';
@@ -222,6 +222,7 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
             return ret;
           };
         }
+        configureTokenizer(tokenizer);
         opts.tokenizer = tokenizer;
       }
 
@@ -297,6 +298,7 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
   }
 
   setOptions(opt: MarkedOptions<ParserOutput, RendererOutput>) {
+    if (opt.tokenizer) configureTokenizer(opt.tokenizer);
     this.defaults = { ...this.defaults, ...opt };
     return this;
   }

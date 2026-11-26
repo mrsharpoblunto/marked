@@ -1,7 +1,7 @@
 import { _Tokenizer } from './Tokenizer.ts';
 import { _defaults } from './defaults.ts';
 import { other, block, inline } from './rules.ts';
-import { beginEmStrongDelCloserScan, cachedLastPossibleDelCloserIndex, cachedLastPossibleEmStrongCloserIndex, endEmStrongDelCloserScan, normalizeLabel, sourceText } from './helpers.ts';
+import { beginEmStrongDelCloserScan, cachedLastPossibleDelCloserIndex, cachedLastPossibleEmStrongCloserIndex, endEmStrongDelCloserScan, execAt, normalizeLabel, sourceText } from './helpers.ts';
 import type { Token, TokensList, Tokens } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
 
@@ -46,20 +46,59 @@ function adaptTokenizer(context: unknown, method: UserTokenizer, offsetIndex: nu
   };
 }
 
-/** @hotIgnore User adapter: one source suffix and lexer context per extension call. */
-function callExtension<P, R>(
-  extension: NonNullable<NonNullable<MarkedOptions<P, R>['extensions']>['block']>[number],
-  lexer: _Lexer<P, R>, src: string, offset: number, tokens: Token[],
-) {
-  return extension.call({ lexer }, src.slice(offset), tokens);
+interface TokenizerDispatch<P, R> {
+  slots: _Tokenizer<P, R>;
+  replaced: number;
 }
 
-/** @hotIgnore User adapter: one source suffix and lexer context per start callback. */
-function callStartExtension<P, R>(
-  extension: NonNullable<NonNullable<MarkedOptions<P, R>['extensions']>['startBlock']>[number],
+const tokenizerDispatches = new WeakMap<object, unknown>();
+
+function createTokenizerDispatch<P, R>(tokenizer: _Tokenizer<P, R>): TokenizerDispatch<P, R> {
+  let slots = tokenizer;
+  let replaced = 0;
+  for (const name of tokenizerMethods) {
+    const method = tokenizer[name];
+    if (method === _Tokenizer.prototype[name]) continue;
+    if (replaced === 0) slots = Object.create(tokenizer);
+    replaced |= tokenizerFlags[name];
+    const offsetIndex = name === 'emStrong' || name === 'del' ? 2 : name === 'reflink' ? 1 : 0;
+    Object.defineProperty(slots, name, { value: adaptTokenizer(tokenizer, method as UserTokenizer, offsetIndex) });
+  }
+  return { slots, replaced };
+}
+
+export function configureTokenizer<P, R>(tokenizer: _Tokenizer<P, R>): void {
+  tokenizerDispatches.set(tokenizer, createTokenizerDispatch(tokenizer));
+}
+
+/** @hotIgnore User adapter: one source suffix per cursor position and one context per extension. */
+function callExtensions<P, R>(
+  extensions: NonNullable<NonNullable<MarkedOptions['extensions']>['block']>,
+  lexer: _Lexer<P, R>, src: string, offset: number, tokens: Token[],
+): Tokens.Generic | undefined {
+  const suffix = src.slice(offset);
+  const count = extensions.length;
+  for (let i = 0; i < count; i++) {
+    if (!(i in extensions)) continue;
+    const token = extensions[i].call({ lexer }, suffix, tokens);
+    if (token) return token;
+  }
+}
+
+/** @hotIgnore User adapter: at most two source strings and one context per start callback. */
+function clipForExtensions<P, R>(
+  extensions: NonNullable<NonNullable<MarkedOptions['extensions']>['startBlock']>,
   lexer: _Lexer<P, R>, src: string, offset: number,
-) {
-  return extension.call({ lexer }, src.slice(offset));
+): string {
+  let startIndex = Infinity;
+  const suffix = src.slice(offset + 1);
+  const count = extensions.length;
+  for (let i = 0; i < count; i++) {
+    if (!(i in extensions)) continue;
+    const start = extensions[i].call({ lexer }, suffix);
+    if (typeof start === 'number' && start >= 0) startIndex = Math.min(startIndex, start);
+  }
+  return startIndex < Infinity ? src.slice(0, offset + startIndex + 1) : src;
 }
 
 /**
@@ -92,15 +131,24 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
 
   #slots: _Tokenizer<ParserOutput, RendererOutput>;
   #replaced = 0;
+  #extensions: Pick<NonNullable<MarkedOptions['extensions']>, 'block' | 'inline' | 'startBlock' | 'startInline'> | null | undefined;
 
   constructor(options?: MarkedOptions<ParserOutput, RendererOutput>) {
     // TokenList cannot be created in one go
     this.tokens = [] as unknown as TokensList;
     this.tokens.links = Object.create(null);
     this.options = options || _defaults;
-    this.options.tokenizer = this.options.tokenizer || new _Tokenizer<ParserOutput, RendererOutput>();
-    this.tokenizer = this.options.tokenizer;
+    const suppliedTokenizer = this.options.tokenizer;
+    this.tokenizer = suppliedTokenizer || new _Tokenizer<ParserOutput, RendererOutput>();
+    this.options.tokenizer = this.tokenizer;
     this.#slots = this.tokenizer;
+    if (suppliedTokenizer) {
+      const dispatch = tokenizerDispatches.get(suppliedTokenizer) as TokenizerDispatch<ParserOutput, RendererOutput> | undefined
+        ?? createTokenizerDispatch(suppliedTokenizer);
+      this.#slots = dispatch.slots;
+      this.#replaced = dispatch.replaced;
+    }
+    this.#extensions = this.options.extensions;
     this.tokenizer.options = this.options;
     this.tokenizer.lexer = this;
     this.inlineQueue = [];
@@ -131,15 +179,6 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       }
     }
     this.tokenizer.rules = rules;
-    for (let i = 0; i < tokenizerMethods.length; i++) {
-      const name = tokenizerMethods[i];
-      const method = this.tokenizer[name];
-      if (method === _Tokenizer.prototype[name]) continue;
-      if (this.#replaced === 0) this.#slots = Object.create(this.tokenizer);
-      this.#replaced |= tokenizerFlags[name];
-      const offsetIndex = name === 'emStrong' || name === 'del' ? 2 : name === 'reflink' ? 1 : 0;
-      Object.defineProperty(this.#slots, name, { value: adaptTokenizer(this.tokenizer, method as UserTokenizer, offsetIndex) });
-    }
   }
 
   /**
@@ -222,17 +261,11 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       this.state.lastToken = tokens.at(-1);
       let token: Tokens.Generic | undefined;
 
-      const extensions = this.options.extensions?.block;
-      if (extensions?.length) {
-        const count = extensions.length;
-        for (let i = 0; i < count; i++) {
-          if (i in extensions && (token = callExtension(extensions[i], this, src, offset, tokens))) {
-            offset += token.raw.length;
-            tokens.push(token);
-            break;
-          }
-        }
-        if (token) continue;
+      const extensions = this.#extensions?.block;
+      if (extensions?.length && (token = callExtensions(extensions, this, src, offset, tokens))) {
+        offset += token.raw.length;
+        tokens.push(token);
+        continue;
       }
 
       const firstCode = src.charCodeAt(offset);
@@ -353,7 +386,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       }
 
       // table (gfm)
-      if ((this.options.gfm && !this.options.pedantic
+      if (((this.options.gfm && !this.options.pedantic)
         || (this.#replaced & tokenizerFlags.table))
         && (token = this.#slots.table(src, offset))) {
         offset += token.raw.length;
@@ -370,22 +403,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
 
       // top-level paragraph
       // prevent paragraph consuming extensions by clipping 'src' to extension start
-      let cutSrc = src;
-      const startExtensions = this.options.extensions?.startBlock;
-      if (startExtensions?.length) {
-        let startIndex = Infinity;
-        const count = startExtensions.length;
-        for (let i = 0; i < count; i++) {
-          if (!(i in startExtensions)) continue;
-          const tempStart = callStartExtension(startExtensions[i], this, src, offset + 1);
-          if (typeof tempStart === 'number' && tempStart >= 0) {
-            startIndex = Math.min(startIndex, tempStart);
-          }
-        }
-        if (startIndex < Infinity && startIndex >= 0) {
-          cutSrc = src.slice(0, offset + startIndex + 1);
-        }
-      }
+      const startExtensions = this.#extensions?.startBlock;
+      const cutSrc = startExtensions?.length ? clipForExtensions(startExtensions, this, src, offset) : src;
       if (this.state.top && (token = this.#slots.paragraph(cutSrc, offset))) {
         const lastToken = tokens.at(-1);
         // A table-shaped header rejected by the table tokenizer is still
@@ -544,17 +563,11 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       let token: Tokens.Generic | undefined;
 
       // extensions
-      const extensions = this.options.extensions?.inline;
-      if (extensions?.length) {
-        const count = extensions.length;
-        for (let i = 0; i < count; i++) {
-          if (i in extensions && (token = callExtension(extensions[i], this, src, offset, tokens))) {
-            offset += token.raw.length;
-            tokens.push(token);
-            break;
-          }
-        }
-        if (token) continue;
+      const extensions = this.#extensions?.inline;
+      if (extensions?.length && (token = callExtensions(extensions, this, src, offset, tokens))) {
+        offset += token.raw.length;
+        tokens.push(token);
+        continue;
       }
 
       const firstCode = src.charCodeAt(offset);
@@ -704,22 +717,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
 
       // text
       // prevent inlineText consuming extensions by clipping 'src' to extension start
-      let cutSrc = src;
-      const startExtensions = this.options.extensions?.startInline;
-      if (startExtensions?.length) {
-        let startIndex = Infinity;
-        const count = startExtensions.length;
-        for (let i = 0; i < count; i++) {
-          if (!(i in startExtensions)) continue;
-          const tempStart = callStartExtension(startExtensions[i], this, src, offset + 1);
-          if (typeof tempStart === 'number' && tempStart >= 0) {
-            startIndex = Math.min(startIndex, tempStart);
-          }
-        }
-        if (startIndex < Infinity && startIndex >= 0) {
-          cutSrc = src.slice(0, offset + startIndex + 1);
-        }
-      }
+      const startExtensions = this.#extensions?.startInline;
+      const cutSrc = startExtensions?.length ? clipForExtensions(startExtensions, this, src, offset) : src;
       if (token = this.#slots.inlineText(cutSrc, offset)) {
         offset += token.raw.length;
         const lastChar = token.raw.slice(-1);
@@ -764,8 +763,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       const start = match.index + (match[2] ? match[2].length : 0);
       let end = match.index + match[0].length;
       if (src.charCodeAt(start) === 60) {
-        const rest = src.slice(start);
-        const html = tag.exec(rest) || autolink.exec(rest);
+        const html = execAt(tag, src, start) || execAt(autolink, src, start);
         if (!html) {
           blockSkip.lastIndex = start + 1;
           continue;

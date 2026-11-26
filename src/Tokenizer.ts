@@ -10,6 +10,7 @@ import {
   trimTrailingBlankLines,
   execAt,
   sourceText,
+  startCloserScan,
   cachedLastPossibleEmStrongCloserIndex,
   cachedLastPossibleDelCloserIndex,
 } from './helpers.ts';
@@ -36,7 +37,7 @@ function unescapeLinkLabel(label: string, rules: Rules): string {
   let result = '';
   for (let i = 0; i < label.length; i++) {
     if (label[i] === '`') {
-      const code = rules.inline.code.exec(label.slice(i));
+      const code = execAt(rules.inline.code, label, i);
       if (code) {
         result += code[0];
         i += code[0].length - 1;
@@ -144,7 +145,7 @@ function isLabelEndInsideToken(src: string, label: string, labelStart: number, r
     }
 
     if (label[i] === '`') {
-      const code = rules.inline.code.exec(label.slice(i));
+      const code = execAt(rules.inline.code, label, i);
       if (code) {
         i += code[0].length - 1;
         continue;
@@ -155,8 +156,8 @@ function isLabelEndInsideToken(src: string, label: string, labelStart: number, r
       continue;
     }
 
-    const tokenSrc = src.slice(labelStart + i);
-    const token = rules.inline.tag.exec(tokenSrc) || rules.inline.autolink.exec(tokenSrc);
+    const token = execAt(rules.inline.tag, src, labelStart + i)
+      || execAt(rules.inline.autolink, src, labelStart + i);
     if (!token) {
       continue;
     }
@@ -392,7 +393,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           start = line + 1;
         }
 
-        const currentRaw = sourceText(src, position, end);
+        const currentRaw = src.slice(position, end);
         position = end + 1;
         rawEnd = end;
         // Only the outermost block quote knows the original tab columns.
@@ -444,7 +445,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           // nested blockquote, which already had one '>' marker stripped, so
           // strip one marker from them too. Otherwise a restated marker after a
           // lazy line is re-parsed as a spurious deeper blockquote.
-          const remaining = sourceText(src, position, quoteEnd);
+          const remaining = src.slice(position, quoteEnd);
           const newText = oldToken.raw + '\n' + remaining.replace(this.rules.other.blockquoteSetextReplace2, '');
           this.lexer.state.inBlockquote = true;
           const newToken = this.blockquote(newText)!;
@@ -484,7 +485,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         } else if (lastToken?.type === 'list') {
           // include continuation in nested list
           const oldToken = lastToken as Tokens.List;
-          const newText = oldToken.raw + '\n' + sourceText(src, position, quoteEnd);
+          const newText = oldToken.raw + '\n' + src.slice(position, quoteEnd);
           const newToken = this.list(newText)!;
           tokens[tokens.length - 1] = newToken;
 
@@ -561,7 +562,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
         const itemStart = offset;
         const firstLineEnd = lineEnd(src, offset + bulletIndent);
-        const firstLine = sourceText(src, offset + bulletIndent, firstLineEnd);
+        const firstLine = src.slice(offset + bulletIndent, firstLineEnd);
         offset = Math.min(src.length, firstLineEnd + 1);
 
         let line = this.options.pedantic
@@ -583,7 +584,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           indent += bulletIndent;
         }
 
-        if (blankLine && this.rules.other.blankLine.test(nextLine = sourceText(src, offset, lineEnd(src, offset)))) { // Items begin with at most one blank line
+        if (blankLine && this.rules.other.blankLine.test(nextLine = src.slice(offset, lineEnd(src, offset)))) { // Items begin with at most one blank line
           offset = Math.min(src.length, offset + nextLine.length + 1);
           endEarly = true;
         }
@@ -603,7 +604,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
           // Check if following lines should be included in List Item
           while (offset < src.length) {
-            const rawLine = sourceText(src, offset, lineEnd(src, offset));
+            const rawLine = src.slice(offset, lineEnd(src, offset));
             let nextLineWithoutTabs;
             nextLine = rawLine;
 
@@ -1179,8 +1180,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       runStart--;
     }
     const prevUnit = maskedSrc.charCodeAt(runStart - 1);
-    const prevWidth = prevUnit >= 0xdc00 && prevUnit <= 0xdfff
-      && maskedSrc.codePointAt(runStart - 2)! > 0xffff ? 2 : 1;
+    const prevWidth = prevUnit >= 0xdc00 && prevUnit <= 0xdfff && maskedSrc.codePointAt(runStart - 2)! > 0xffff
+      ? 2
+      : 1;
     const runPrevChar = runStart > 0 ? maskedSrc.slice(runStart - prevWidth, runStart) : '';
     // The other delimiter character counts as punctuation here (`_**a*`, `*_#_`)
     const runPrevPunct = runPrevChar === '*' || runPrevChar === '_' || !!this.rules.inline.punctuation.exec(runPrevChar);
@@ -1207,17 +1209,17 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       const openerCanClose = !this.options.pedantic && !!runPrevChar.trim()
         && (!!nextChar || (delimChar === '*' && !runPrevPunct));
       if (delimChar !== '*' && delimChar !== '_') return;
-      const endReg = delimChar === '*' ? this.rules.inline.emStrongRDelimAst : this.rules.inline.emStrongRDelimUnd;
+      const closerRule = delimChar === '*' ? this.rules.inline.emStrongRDelimAst : this.rules.inline.emStrongRDelimUnd;
       const lastPossibleEmStrongCloserIndex = cachedLastPossibleEmStrongCloserIndex(this, maskedSrc, delimChar.charCodeAt(0));
       const emStrongCloserWindowStart = maskedSrc.length - src.length + offset + lLength;
       if (lastPossibleEmStrongCloserIndex < emStrongCloserWindowStart) return;
-      // Clip maskedSrc to same section of string as src (move to lexer?)
-      maskedSrc = maskedSrc.slice(offset - src.length + lLength);
-      const lastPossibleEmStrongCloserIndexInWindow = lastPossibleEmStrongCloserIndex - emStrongCloserWindowStart;
-      endReg.lastIndex = 0;
+      // An emStrongMask hook can return a string with a different length.
+      const scanStart = Math.max(0, emStrongCloserWindowStart);
+      const lastCloser = lastPossibleEmStrongCloserIndex - emStrongCloserWindowStart + scanStart;
+      const endReg = startCloserScan(closerRule, maskedSrc, scanStart);
 
       while ((match = endReg.exec(maskedSrc)) !== null) {
-        if (match.index > lastPossibleEmStrongCloserIndexInWindow) break;
+        if (match.index > lastCloser) break;
         rDelim = match[1] || match[2] || match[3] || match[4] || match[5] || match[6];
 
         if (!rDelim) continue; // skip single * in __abc*abc__
@@ -1248,11 +1250,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         rLength = Math.min(rLength, rLength + delimTotal + midDelimTotal);
         // char length can be >1 for unicode characters;
         const lastCharLength = match[0].codePointAt(0)! > 0xffff ? 2 : 1;
-        const raw = sourceText(src, offset, offset + lLength + match.index + lastCharLength + rLength);
+        const rawEnd = Math.min(src.length, offset + lLength + match.index - scanStart + lastCharLength + rLength);
+        const raw = sourceText(src, offset, rawEnd);
 
         // Create `em` if smallest delimiter has odd char count. *a***
         if (Math.min(lLength, rLength) % 2) {
-          const text = raw.slice(1, -1);
+          const text = sourceText(src, offset + 1, rawEnd - 1);
           return {
             type: 'em',
             raw,
@@ -1262,7 +1265,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         }
 
         // Create 'strong' if smallest delimiter has even char count. **a***
-        const text = raw.slice(2, -2);
+        const text = sourceText(src, offset + 2, rawEnd - 2);
         return {
           type: 'strong',
           raw,
@@ -1318,17 +1321,17 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       const lLength = countCodePoints(match[0]) - 1;
       let rDelim, rLength, delimTotal = lLength;
 
-      const endReg = this.rules.inline.delRDelim;
+      const closerRule = this.rules.inline.delRDelim;
       const lastPossibleDelCloserIndex = cachedLastPossibleDelCloserIndex(this, maskedSrc);
       const delCloserWindowStart = maskedSrc.length - src.length + offset + lLength;
       if (lastPossibleDelCloserIndex < delCloserWindowStart) return;
-      // Clip maskedSrc to same section of string as src
-      maskedSrc = maskedSrc.slice(offset - src.length + lLength);
-      const lastPossibleDelCloserIndexInWindow = lastPossibleDelCloserIndex - delCloserWindowStart;
-      endReg.lastIndex = 0;
+      // An emStrongMask hook can return a string with a different length.
+      const scanStart = Math.max(0, delCloserWindowStart);
+      const lastCloser = lastPossibleDelCloserIndex - delCloserWindowStart + scanStart;
+      const endReg = startCloserScan(closerRule, maskedSrc, scanStart);
 
       while ((match = endReg.exec(maskedSrc)) !== null) {
-        if (match.index > lastPossibleDelCloserIndexInWindow) break;
+        if (match.index > lastCloser) break;
         rDelim = match[1] || match[2] || match[3] || match[4] || match[5] || match[6];
 
         if (!rDelim) continue;
@@ -1350,10 +1353,11 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         rLength = Math.min(rLength, rLength + delimTotal);
         // char length can be >1 for unicode characters
         const lastCharLength = match[0].codePointAt(0)! > 0xffff ? 2 : 1;
-        const raw = sourceText(src, offset, offset + lLength + match.index + lastCharLength + rLength);
+        const rawEnd = Math.min(src.length, offset + lLength + match.index - scanStart + lastCharLength + rLength);
+        const raw = sourceText(src, offset, rawEnd);
 
         // Create del token - only single ~ or double ~~ supported
-        const text = raw.slice(lLength, -lLength);
+        const text = sourceText(src, offset + lLength, rawEnd - lLength);
         return {
           type: 'del',
           raw,

@@ -7,10 +7,16 @@ export function sourceText(src: string, start: number, end: number): string {
 
 const cursorRules = new WeakMap<RegExp, RegExp>();
 
+/** @hotIgnore User adapter: one source suffix per custom rule call. */
+function execUserRule(rule: RegExp, src: string, offset: number): RegExpExecArray | null {
+  return rule.exec(src.slice(offset));
+}
+
 export function execAt(rule: RegExp, src: string, offset: number): RegExpExecArray | null {
-  if (typeof rule.source !== 'string') return rule.exec(src);
+  if (offset === 0) return rule.exec(src);
   let sticky = cursorRules.get(rule);
   if (!sticky) {
+    if (typeof rule.source !== 'string' || rule.exec !== RegExp.prototype.exec) return execUserRule(rule, src, offset);
     // Remove start anchors while preserving escaped characters and classes.
     const pattern = rule.source.replace(/\\.|\[(?:\\.|[^\]\\])*\]|\^/g, part => part === '^' ? '' : part);
     sticky = new RegExp(pattern, rule.flags.replace(/[gy]/g, '') + 'y');
@@ -18,6 +24,25 @@ export function execAt(rule: RegExp, src: string, offset: number): RegExpExecArr
   }
   sticky.lastIndex = offset;
   return sticky.exec(src);
+}
+
+const closerRules = new WeakMap<RegExp, { initial: RegExp, next: RegExp }>();
+
+/** Start a delimiter scan at the cursor. The first alternative can only match at the start. */
+export function startCloserScan(rule: RegExp, src: string, start: number): RegExp {
+  let scan = closerRules.get(rule);
+  if (!scan) {
+    const separator = rule.source.indexOf('|');
+    scan = {
+      initial: new RegExp(rule.source.slice(1, separator), 'uy'),
+      next: new RegExp(rule.source.slice(separator + 1), 'gu'),
+    };
+    closerRules.set(rule, scan);
+  }
+  scan.initial.lastIndex = start;
+  const initial = scan.initial.exec(src);
+  scan.next.lastIndex = initial ? scan.initial.lastIndex : start;
+  return scan.next;
 }
 
 /**
