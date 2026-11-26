@@ -774,12 +774,42 @@ function taskPrefixEnd(src: string): number {
   return end > 3 ? end : 0;
 }
 
-/** @hot */
-function stripTaskPrefix(src: string): string {
-  return sourceText(src, taskPrefixEnd(src), src.length);
+/** @hotIgnore Output: emits the fields and checkbox for one task item. */
+function finishTaskItem(item: Tokens.ListItem, child: Tokens.Paragraph | Tokens.Text,
+  entry: { src: string } | undefined, prefix: number, replaceRule: RegExp, checkRule: RegExp, loose: boolean): void {
+  if (replaceRule === standardReplaceTask) {
+    const original = item.text;
+    item.text = sourceText(original, prefix, original.length);
+    const raw = child.raw;
+    const text = child.text;
+    child.raw = raw === original ? item.text : sourceText(raw, taskPrefixEnd(raw), raw.length);
+    child.text = text === original ? item.text : text === raw ? child.raw : sourceText(text, taskPrefixEnd(text), text.length);
+    if (entry) {
+      const queued = entry.src;
+      entry.src = queued === text ? child.text : queued === original ? item.text : sourceText(queued, taskPrefixEnd(queued), queued.length);
+    }
+  } else {
+    item.text = replaceUserContainerRule(replaceRule, item.text, 0, item.text.length, '');
+    child.raw = replaceUserContainerRule(replaceRule, child.raw, 0, child.raw.length, '');
+    child.text = replaceUserContainerRule(replaceRule, child.text, 0, child.text.length, '');
+    if (entry) entry.src = replaceUserContainerRule(replaceRule, entry.src, 0, entry.src.length, '');
+  }
+
+  const taskRaw = checkRule === standardTaskCheckbox ? firstTaskMarker(item.raw) : matchUserContainerRule(checkRule, item.raw, 0)?.[0];
+  if (taskRaw === undefined) return;
+  const checkbox = createCheckbox(taskRaw + ' ', taskRaw.charCodeAt(1) !== 32);
+  item.checked = checkbox.checked;
+  if (!loose) {
+    item.tokens.unshift(checkbox);
+  } else if (child.tokens) {
+    child.raw = checkbox.raw + child.raw;
+    child.text = checkbox.raw + child.text;
+    child.tokens.unshift(checkbox);
+  } else {
+    item.tokens.unshift(createParagraph(checkbox.raw, checkbox.raw, [checkbox]));
+  }
 }
 
-/** @hot */
 function firstTaskMarker(src: string): string | undefined {
   for (let i = 0; i + 2 < src.length; i++) {
     if (taskMarkerAt(src, i)) return sourceText(src, i, i + 3);
@@ -1163,6 +1193,7 @@ function quoteSegments(src: string, first: number, end: number, segments: number
  */
 export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   /** @internal */
+  private listQueueState: number[] = [];
   private listBuffer: number[] | undefined;
   private quoteBuffer: number[] | undefined;
   options: MarkedOptions<ParserOutput, RendererOutput>;
@@ -1591,7 +1622,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (markerEnd || cap) {
       // Inside a list item, paragraph lines are lexed as text tokens, so a list after one would
       // interrupt the paragraph. Only a non-empty list starting with a bullet or 1 can do that
-      if (!this.options.pedantic && this.lexer.state.lastToken?.type === 'text'
+      if (!this.options.pedantic && this.lexer.blockKind(this.lexer.state.lastToken) === TokenKind.Text
         && !(this.rules.other.listInterruptsParagraph === standardListInterrupt
           ? listInterruptsParagraph(src, offset, offset + markerEnd)
           : execAt(this.rules.other.listInterruptsParagraph, src, offset, this.rules.cursor?.other.listInterruptsParagraph))) {
@@ -1869,80 +1900,64 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       // Item child tokens handled here at end because we needed to have the final item to trim it first
       // First pass: tokenize items and finalize list.loose from spacers before placing checkboxes
       // Where each item's inline queue entries start, so the checkbox is removed from its own text
-      const queueStarts: number[] = [];
-      for (const item of list.items) {
-        this.lexer.state.top = false;
-        queueStarts.push(this.lexer.inlineQueue.length);
-        this.lexer.blockTokens(item.text, item.tokens);
-
-        if (!list.loose) {
-          for (let i = 0; i < item.tokens.length; i++) {
-            const token = item.tokens[i];
-            if (token.type === 'space' && hasTwoLineFeeds(token.raw)) {
-              list.loose = true;
-              break;
-            }
-          }
-        }
-      }
-
-      // Second pass: place task checkboxes using the final list.loose
-      for (let i = 0; i < list.items.length; i++) {
-        const item = list.items[i];
-        const itemToken = item.tokens[0];
-        if (item.task && (itemToken?.type === 'text' || itemToken?.type === 'paragraph')) {
-          // Remove checkbox markdown from item tokens
-          const rule = this.rules.other.listReplaceTask;
-          const standardTask = rule === standardReplaceTask;
-          item.text = standardTask ? stripTaskPrefix(item.text) : replaceUserContainerRule(rule, item.text, 0, item.text.length, '');
-          itemToken.raw = standardTask ? stripTaskPrefix(itemToken.raw) : replaceUserContainerRule(rule, itemToken.raw, 0, itemToken.raw.length, '');
-          itemToken.text = standardTask ? stripTaskPrefix(itemToken.text) : replaceUserContainerRule(rule, itemToken.text, 0, itemToken.text.length, '');
-          // The first token queued its text first, so its entry is found right away
-          const inlineQueue = this.lexer.inlineQueue;
-          for (let j = queueStarts[i]; j < inlineQueue.length; j++) {
-            if (inlineQueue[j].tokens === itemToken.tokens) {
-              const entry = inlineQueue[j];
-              entry.src = standardTask ? stripTaskPrefix(entry.src) : replaceUserContainerRule(rule, entry.src, 0, entry.src.length, '');
-              break;
-            }
-          }
-
-          const taskRule = this.rules.other.listTaskCheckbox;
-          const taskRaw = taskRule === standardTaskCheckbox ? firstTaskMarker(item.raw) : matchUserContainerRule(taskRule, item.raw, 0)?.[0];
-          if (taskRaw !== undefined) {
-            const checkboxToken: Tokens.Checkbox = createCheckbox(taskRaw + ' ', taskRaw.charCodeAt(1) !== 32);
-            item.checked = checkboxToken.checked;
-            if (list.loose) {
-              if (item.tokens[0] && ['paragraph', 'text'].includes(item.tokens[0].type) && 'tokens' in item.tokens[0] && item.tokens[0].tokens) {
-                item.tokens[0].raw = checkboxToken.raw + item.tokens[0].raw;
-                item.tokens[0].text = checkboxToken.raw + item.tokens[0].text;
-                item.tokens[0].tokens.unshift(checkboxToken);
-              } else {
-                item.tokens.unshift(createParagraph(checkboxToken.raw, checkboxToken.raw, [checkboxToken]));
-              }
-            } else {
-              item.tokens.unshift(checkboxToken);
-            }
-          }
-        } else if (item.task) {
-          item.task = false;
-        }
-      }
-
-      // Set all items to loose if list is loose
-      if (list.loose) {
+      const queueStarts = this.listQueueState;
+      const queueBase = queueStarts.length;
+      try {
         for (const item of list.items) {
-          item.loose = true;
-          for (const token of item.tokens) {
-            if (token.type === 'text') {
-              token.type = 'paragraph';
-              if (token.kind !== undefined) token.kind = TokenKind.Paragraph;
+          this.lexer.state.top = false;
+          queueStarts.push(this.lexer.inlineQueue.length, item.task ? taskPrefixEnd(item.text) : 0);
+          this.lexer.blockTokens(item.text, item.tokens);
+
+          if (!list.loose) {
+            for (let i = 0; i < item.tokens.length; i++) {
+              const token = item.tokens[i];
+              if (this.lexer.blockKind(token) === TokenKind.Space && hasTwoLineFeeds(token.raw)) {
+                list.loose = true;
+                break;
+              }
             }
           }
         }
-      }
 
-      return list;
+        // Second pass: place task checkboxes using the final list.loose
+        for (let i = 0; i < list.items.length; i++) {
+          const item = list.items[i];
+          const kind = this.lexer.blockKind(item.tokens[0]);
+          if (item.task && (kind === TokenKind.Text || kind === TokenKind.Paragraph)) {
+            const itemToken = item.tokens[0] as Tokens.Text | Tokens.Paragraph;
+            const inlineQueue = this.lexer.inlineQueue;
+            let entry: { src: string } | undefined;
+            const queueIndex = queueBase + i * 2;
+            for (let j = queueStarts[queueIndex]; j < inlineQueue.length; j++) {
+              if (inlineQueue[j].tokens === itemToken.tokens) {
+                entry = inlineQueue[j];
+                break;
+              }
+            }
+            finishTaskItem(item, itemToken, entry, queueStarts[queueIndex + 1],
+              this.rules.other.listReplaceTask, this.rules.other.listTaskCheckbox, list.loose);
+          } else if (item.task) {
+            item.task = false;
+          }
+        }
+
+        // Set all items to loose if list is loose
+        if (list.loose) {
+          for (const item of list.items) {
+            item.loose = true;
+            for (const token of item.tokens) {
+              if (this.lexer.blockKind(token) === TokenKind.Text) {
+                token.type = 'paragraph';
+                if (token.kind !== undefined) token.kind = TokenKind.Paragraph;
+              }
+            }
+          }
+        }
+
+        return list;
+      } finally {
+        queueStarts.length = queueBase;
+      }
     }
   }
 

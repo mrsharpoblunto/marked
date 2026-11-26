@@ -31,7 +31,6 @@ export function createListItem(raw: Tokens.ListItem['raw'], task: Tokens.ListIte
   return { type: 'list_item', raw, task, loose, text, tokens: [], kind: TokenKind.ListItem };
 }
 
-/** @hotIgnore Output: one checkbox token per call. */
 export function createCheckbox(raw: Tokens.Checkbox['raw'], checked: Tokens.Checkbox['checked']): Tokens.Checkbox {
   return { type: 'checkbox', raw, checked, kind: TokenKind.Checkbox };
 }
