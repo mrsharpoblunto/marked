@@ -1,8 +1,8 @@
 import { _defaults } from './defaults.ts';
 import {
-  rtrim,
+  withoutTrailingNewlines,
   splitCells,
-  findClosingBracket,
+  findClosingParen,
   expandTabs,
   expandBlockquoteTabs,
   normalizeLabel,
@@ -256,6 +256,35 @@ function isEscapedAt(src: string, offset: number): boolean {
   return (offset - start) % 2 !== 0;
 }
 
+/** @hot */
+function hasTableDelimiter(src: string): boolean {
+  for (let i = 0; i < src.length; i++) {
+    const code = src.charCodeAt(i);
+    if (code === 58 || code === 124) return true;
+  }
+  return false;
+}
+
+/** @hotIgnore Output: one alignment array with one entry per column. */
+function tableAlignments(src: string): Tokens.Table['align'] {
+  const alignment: Tokens.Table['align'] = [];
+  let first = src.charCodeAt(0) === 124 ? 1 : 0;
+  let end = src.length;
+  while (src.charCodeAt(end - 1) === 32) end--;
+  if (src.charCodeAt(end - 1) === 124) end--;
+  for (let i = first; i <= end; i++) {
+    if (i < end && src.charCodeAt(i) !== 124) continue;
+    let last = i;
+    while (first < last && src.charCodeAt(first) === 32) first++;
+    while (last > first && src.charCodeAt(last - 1) === 32) last--;
+    const left = src.charCodeAt(first) === 58;
+    const right = src.charCodeAt(last - 1) === 58;
+    alignment.push(left ? (right ? 'center' : 'left') : (right ? 'right' : null));
+    first = i + 1;
+  }
+  return alignment;
+}
+
 /**
  * Tokenizer
  */
@@ -361,7 +390,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
       return {
         type: 'heading',
-        raw: rtrim(cap[0], '\n'),
+        raw: withoutTrailingNewlines(cap[0]),
         depth: cap[1].length,
         text,
         tokens: this.lexer.inline(text),
@@ -925,7 +954,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     const cap = execAt(this.rules.block.def, src, offset);
     if (cap) {
       // outside angle brackets a link destination holds only balanced parentheses
-      if (cap[2].charCodeAt(0) !== 60 && findClosingBracket(cap[2], '()') !== -1) {
+      if (cap[2].charCodeAt(0) !== 60 && findClosingParen(cap[2]) !== -1) {
         return;
       }
 
@@ -935,7 +964,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       return {
         type: 'def',
         tag,
-        raw: rtrim(cap[0], '\n'),
+        raw: withoutTrailingNewlines(cap[0]),
         href,
         title,
       };
@@ -949,14 +978,14 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   /** @internal */
   tableAt(src: string, offset: number): Tokens.Table | undefined {
     let headers: string[] | undefined;
-    let aligns: string[] | undefined;
+    let aligns: Tokens.Table['align'] | undefined;
     if (this.options.gfm && !this.options.pedantic) {
       const header = execAt(this.rules.other.tableHeader, src, offset);
-      if (!header || !this.rules.other.tableDelimiter.test(header[2])) {
+      if (!header || !hasTableDelimiter(header[2])) {
         return;
       }
-      headers = splitCells(header[1]);
-      aligns = header[2].replace(this.rules.other.tableAlignChars, '').split('|');
+      headers = splitCells(header[1], 0, header[1].length, 0);
+      aligns = tableAlignments(header[2]);
       if (headers.length !== aligns.length) {
         return;
       }
@@ -966,38 +995,25 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       return;
     }
 
-    if (!this.rules.other.tableDelimiter.test(cap[2])) {
+    if (!hasTableDelimiter(cap[2])) {
       // delimiter row must have a pipe (|) or colon (:) otherwise it is a setext heading
       return;
     }
 
-    headers ??= splitCells(cap[1]);
-    aligns ??= cap[2].replace(this.rules.other.tableAlignChars, '').split('|');
-    const rows = cap[3]?.trim() ? cap[3].replace(this.rules.other.tableRowBlankLine, '').split('\n') : [];
+    headers ??= splitCells(cap[1], 0, cap[1].length, 0);
+    aligns ??= tableAlignments(cap[2]);
 
     const item: Tokens.Table = {
       type: 'table',
-      raw: rtrim(cap[0], '\n'),
+      raw: withoutTrailingNewlines(cap[0]),
       header: [],
-      align: [],
+      align: aligns,
       rows: [],
     };
 
     if (headers.length !== aligns.length) {
       // header and align columns must be equal, rows can be different.
       return;
-    }
-
-    for (const align of aligns) {
-      if (this.rules.other.tableAlignRight.test(align)) {
-        item.align.push('right');
-      } else if (this.rules.other.tableAlignCenter.test(align)) {
-        item.align.push('center');
-      } else if (this.rules.other.tableAlignLeft.test(align)) {
-        item.align.push('left');
-      } else {
-        item.align.push(null);
-      }
     }
 
     for (let i = 0; i < headers.length; i++) {
@@ -1009,15 +1025,22 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       });
     }
 
-    for (const row of rows) {
-      item.rows.push(splitCells(row, item.header.length).map((cell, i) => {
-        return {
-          text: cell,
-          tokens: this.lexer.inline(cell),
-          header: false,
-          align: item.align[i],
-        };
-      }));
+    const body = cap[3];
+    if (body && trimStartOffset(body, 0, body.length) < body.length) {
+      let end = body.length;
+      while (body.charCodeAt(end - 1) === 32 || body.charCodeAt(end - 1) === 9) end--;
+      end = body.charCodeAt(end - 1) === 10 ? end - 1 : body.length;
+      let start = 0;
+      while (start <= end) {
+        const next = Math.min(lineEnd(body, start), end);
+        const cells = splitCells(body, start, next, item.header.length);
+        const row: Tokens.TableCell[] = [];
+        for (let i = 0; i < cells.length; i++) {
+          row.push({ text: cells[i], tokens: this.lexer.inline(cells[i]), header: false, align: aligns[i] });
+        }
+        item.rows.push(row);
+        start = next + 1;
+      }
     }
 
     return item;
@@ -1035,7 +1058,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       const text = sourceText(cap[1], start, trimEndOffset(cap[1], start, cap[1].length));
       return {
         type: 'heading',
-        raw: rtrim(cap[0], '\n'),
+        raw: withoutTrailingNewlines(cap[0]),
         depth: cap[2].charAt(0) === '=' ? 1 : 2,
         text,
         tokens: this.lexer.inline(text),
@@ -1181,7 +1204,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         if (!endsWithBracket || isEscapedAt(url, urlEnd - 1)) return;
       } else {
         // find closing parenthesis
-        const lastParenIndex = findClosingBracket(cap[2], '()');
+        const lastParenIndex = findClosingParen(cap[2]);
         if (lastParenIndex === -2) {
           // more open parens than closed
           return;

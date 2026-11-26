@@ -68,14 +68,17 @@ export function startCloserScan(rule: RegExp, src: string, start: number): RegEx
 /**
  * Helpers
  */
-const escapeReplacements: { [index: string]: string } = {
-  '&': '&amp;',
-  '<': '&lt;',
-  '>': '&gt;',
-  '"': '&quot;',
-  "'": '&#39;',
-};
-const getEscapeReplacement = (ch: string) => escapeReplacements[ch];
+/** @hot */
+function getEscapeReplacement(ch: string): string {
+  switch (ch.charCodeAt(0)) {
+    case 38: return '&amp;';
+    case 60: return '&lt;';
+    case 62: return '&gt;';
+    case 34: return '&quot;';
+    case 39: return '&#39;';
+    default: return ch;
+  }
+}
 
 export function escapeHtmlEntities(html: string, encode?: boolean) {
   if (encode) {
@@ -102,16 +105,15 @@ export function decodeNumericCharacterReferences(text: string) {
   }
   // A decoded character must not join its neighbours into a new reference,
   // so every `&` that is not already one is escaped here.
-  return text.replace(other.numericCharacterReferenceOrAmpersand, (ref: string, dec?: string, hex?: string) => {
-    if (dec === undefined && hex === undefined) {
-      return '&amp;';
-    }
-    const code = dec === undefined ? Number.parseInt(hex!, 16) : Number.parseInt(dec, 10);
-    if (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) {
-      return '�';
-    }
-    return code === 38 ? '&amp;' : String.fromCodePoint(code);
-  });
+  return text.replace(other.numericCharacterReferenceOrAmpersand, decodeNumericReference);
+}
+
+/** @hot */
+function decodeNumericReference(ref: string, dec: string | undefined, hex: string | undefined): string {
+  if (dec === undefined && hex === undefined) return '&amp;';
+  const code = dec === undefined ? Number.parseInt(hex!, 16) : Number.parseInt(dec, 10);
+  if (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return '�';
+  return code === 38 ? '&amp;' : String.fromCodePoint(code);
 }
 
 export function cleanUrl(href: string) {
@@ -123,78 +125,44 @@ export function cleanUrl(href: string) {
   return href;
 }
 
-export function splitCells(tableRow: string, count?: number) {
-  // ensure that every cell-delimiting pipe has a space
-  // before it to distinguish it from an escaped pipe
-  const row = tableRow.replace(other.findPipe, (match, offset, str) => {
-      let escaped = false;
-      let curr = offset;
-      while (--curr >= 0 && str[curr] === '\\') escaped = !escaped;
-      if (escaped) {
-        // odd number of slashes means | is escaped
-        // so we leave it alone
-        return '|';
-      } else {
-        // add space before unescaped |
-        return ' |';
-      }
-    }),
-    cells = row.split(other.splitPipe);
-  let i = 0;
-
-  // First/last cell in a row cannot be empty if it has no leading/trailing pipe
-  if (!cells[0].trim()) {
-    cells.shift();
-  }
-  if (cells.length > 0 && !cells.at(-1)?.trim()) {
-    cells.pop();
-  }
-
-  if (count) {
-    if (cells.length > count) {
-      cells.splice(count);
-    } else {
-      while (cells.length < count) cells.push('');
+export function splitCells(tableRow: string, rowStart: number, rowEnd: number, count: number): string[] {
+  const cells: string[] = [];
+  let start = rowStart;
+  let escaped = false;
+  let escapedPipe = false;
+  for (let i = rowStart; i <= rowEnd; i++) {
+    const atEnd = i === rowEnd;
+    const code = tableRow.charCodeAt(i);
+    if (!atEnd && code === 92) {
+      escaped = !escaped;
+      continue;
     }
+    if (atEnd || (code === 124 && !escaped)) {
+      const left = trimStartOffset(tableRow, start, i);
+      const right = trimEndOffset(tableRow, left, i);
+      if (left < right || (start !== rowStart && !atEnd)) {
+        const cell = sourceText(tableRow, left, right);
+        cells.push(escapedPipe ? cell.replace(other.slashPipe, '|') : cell);
+        if (count && cells.length === count) return cells;
+      }
+      start = i + 1;
+      escapedPipe = false;
+    } else if (code === 124) {
+      escapedPipe = true;
+    }
+    escaped = false;
   }
-
-  for (; i < cells.length; i++) {
-    // leading or trailing whitespace is ignored per the gfm spec
-    cells[i] = cells[i].trim().replace(other.slashPipe, '|');
+  if (count) {
+    while (cells.length < count) cells.push('');
   }
   return cells;
 }
 
-/**
- * Remove trailing 'c's. Equivalent to str.replace(/c*$/, '').
- * /c*$/ is vulnerable to REDOS.
- *
- * @param str
- * @param c
- * @param invert Remove suffix of non-c chars instead. Default falsey.
- */
-export function rtrim(str: string, c: string, invert?: boolean) {
-  const l = str.length;
-  if (l === 0) {
-    return '';
-  }
-
-  // Length of suffix matching the invert condition.
-  let suffLen = 0;
-
-  // Step left until we fail to match the invert condition.
-  while (suffLen < l) {
-    const currChar = str.charAt(l - suffLen - 1);
-    if (currChar === c && !invert) {
-      suffLen++;
-    } else if (currChar !== c && invert) {
-      suffLen++;
-    } else {
-      break;
-    }
-  }
-
-  return str.slice(0, l - suffLen);
+/** @hot */
+export function withoutTrailingNewlines(src: string): string {
+  let end = src.length;
+  while (src.charCodeAt(end - 1) === 10) end--;
+  return sourceText(src, 0, end);
 }
 
 export function trimTrailingBlankLines(str: string) {
@@ -206,7 +174,7 @@ export function trimTrailingBlankLines(str: string) {
       blankLines++;
       lineEnd = i;
     } else if (code !== 32 && code !== 9) {
-      return blankLines > 1 ? str.slice(0, lineEnd) : str;
+      return blankLines > 1 ? sourceText(str, 0, lineEnd) : str;
     }
   }
   return blankLines === 0 ? str : '';
@@ -227,19 +195,21 @@ export function normalizeLabel(label: string) {
   return label.trim().replace(other.multipleSpaceGlobal, ' ').toLowerCase().toUpperCase().toLowerCase();
 }
 
-export function findClosingBracket(str: string, b: string) {
+/** @hot */
+export function findClosingParen(str: string) {
   // an opening bracket on its own is still unbalanced, so both have to be absent
-  if (str.indexOf(b[0]) === -1 && str.indexOf(b[1]) === -1) {
+  if (str.indexOf('(') === -1 && str.indexOf(')') === -1) {
     return -1;
   }
 
   let level = 0;
   for (let i = 0; i < str.length; i++) {
-    if (str[i] === '\\') {
+    const code = str.charCodeAt(i);
+    if (code === 92) {
       i++;
-    } else if (str[i] === b[0]) {
+    } else if (code === 40) {
       level++;
-    } else if (str[i] === b[1]) {
+    } else if (code === 41) {
       level--;
       if (level < 0) {
         return i;
