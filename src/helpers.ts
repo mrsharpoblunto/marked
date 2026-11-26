@@ -1,3 +1,4 @@
+import { inlineMaskCode } from './InlineMask.ts';
 import type { InlineMask } from './InlineMask.ts';
 import { block, inline, noopTest, other } from './rules.ts';
 
@@ -392,32 +393,80 @@ export function inlineRunAt(runs: InlineRuns, offset: number): number {
 }
 
 /** @hot */
-function addInlineRun(runs: InlineRuns, src: string, start: number, end: number, code: number): void {
+function addInlineRun(runs: InlineRuns, start: number, end: number, code: number): void {
   const index = runs.length;
   if (index + 5 > runs.entries.length) {
-    const expanded = new Int32Array(Math.max(40, runs.entries.length * 2));
+    const expanded = new Int32Array(Math.max(48, runs.entries.length * 2));
     expanded.set(runs.entries);
     runs.entries = expanded;
   }
-  const codes = runs.mask.codes;
-  const unit = codes[start - 1];
-  const width = unit >= 0xdc00 && unit <= 0xdfff && codes[start - 2] >= 0xd800 && codes[start - 2] <= 0xdbff ? 2 : 1;
-  const tildeIsWord = code === 42 && runs.gfm;
   const entries = runs.entries;
   entries[index] = start;
-  entries[index + 1] = end - start;
+  entries[index + 1] = end;
   entries[index + 2] = code;
-  entries[index + 3] = maskDelimiterClass(codes, src, start - width, tildeIsWord);
-  entries[index + 4] = maskDelimiterClass(codes, src, end, tildeIsWord);
   runs.length += 5;
 }
 
 /** @hot */
-function maskDelimiterClass(codes: Uint16Array, source: string, pos: number, tildeIsWord: boolean): number {
+export function effectiveInlineStart(runs: InlineRuns, index: number, limit: number): number {
+  const entries = runs.entries;
+  const start = entries[index];
+  const code = entries[index + 2];
+  if (inlineMaskCode(runs.mask, start) === code) return start;
+  return start + 1 < Math.min(limit, entries[index + 1]) && inlineMaskCode(runs.mask, start + 1) === code ? start + 1 : -1;
+}
+
+/** @hot */
+export function maskDelimiterClass(runs: InlineRuns, source: string, pos: number, tildeIsWord: boolean): number {
   if (pos < 0 || pos >= source.length) return 0;
-  const code = codes[pos];
+  const code = inlineMaskCode(runs.mask, pos);
   if (code === source.charCodeAt(pos)) return delimiterClass(source, pos, tildeIsWord);
   return code === 97 ? 2 : 1;
+}
+
+/** @hot */
+export function inlineWindowHints(runs: InlineRuns, start: number, end: number, hints: CloserHints): void {
+  let star = -1;
+  let underscore = -1;
+  let tilde = -1;
+  const entries = runs.entries;
+  for (let i = inlineRunAt(runs, end) - 5; i >= 0 && entries[i + 1] > start; i -= 5) {
+    const pos = effectiveInlineStart(runs, i, end);
+    if (pos <= start) continue;
+    const prev = inlineMaskCode(runs.mask, pos - 1);
+    if (prev === 32 || prev === 9 || prev === 10 || prev === 13 || prev === 12) continue;
+    const code = entries[i + 2];
+    if (code === 42 && star < 0) star = pos;
+    else if (code === 95 && underscore < 0) underscore = pos;
+    else if (code === 126 && tilde < 0) tilde = pos;
+    if (star >= 0 && underscore >= 0 && tilde >= 0) break;
+  }
+  hints.star = star;
+  hints.underscore = underscore;
+  hints.tilde = tilde;
+}
+
+/** @hot */
+export function delimiterBefore(mask: InlineMask, pos: number): number {
+  const last = inlineMaskCode(mask, pos - 1);
+  if (last >= 0xdc00 && last <= 0xdfff) {
+    const high = inlineMaskCode(mask, pos - 2);
+    if (high >= 0xd800 && high <= 0xdbff) return pos - 2;
+  }
+  return pos - 1;
+}
+
+/** @hot */
+export function classifyInlineRuns(runs: InlineRuns, source: string): void {
+  const entries = runs.entries;
+  for (let i = 0; i < runs.length; i += 5) {
+    const start = effectiveInlineStart(runs, i, source.length);
+    if (start < 0) continue;
+    const tildeIsWord = entries[i + 2] === 42 && runs.gfm;
+    const before = delimiterBefore(runs.mask, start);
+    entries[i + 3] = (maskDelimiterClass(runs, source, before, tildeIsWord) << 1) | (start - before - 1);
+    entries[i + 4] = maskDelimiterClass(runs, source, entries[i + 1], tildeIsWord);
+  }
 }
 
 export interface CloserHints {
@@ -460,28 +509,34 @@ export function scanCloserHints(src: string, hints: CloserHints, _masks: undefin
 }
 
 /** @hot */
-export function scanInlineRuns(src: string, hints: CloserHints, runs: InlineRuns): void {
-  let star = -1;
-  let underscore = -1;
-  let tilde = -1;
+export function scanInlineRuns(src: string, runs: InlineRuns): void {
   runs.length = 0;
-  const codes = runs.mask.codes;
-  for (let i = 0; i < src.length; i++) {
-    const code = codes[i];
-    if (code !== 42 && code !== 95 && code !== 126) continue;
+  for (let i = 0; i < src.length;) {
+    const code = src.charCodeAt(i);
+    if (code !== 42 && code !== 95 && code !== 126) {
+      i++;
+      continue;
+    }
     const start = i;
-    while (i + 1 < src.length && codes[i + 1] === code) i++;
-    addInlineRun(runs, src, start, i + 1, code);
-    if (start === 0) continue;
-    const prev = codes[start - 1];
-    if (prev === 32 || prev === 9 || prev === 10 || prev === 13 || prev === 12) continue;
-    if (code === 42) star = start;
-    else if (code === 95) underscore = start;
-    else tilde = start;
+    i = runs.mask.openerEnds[i];
+    addInlineRun(runs, start, i, code);
   }
-  hints.star = star;
-  hints.underscore = underscore;
-  hints.tilde = tilde;
+}
+
+/** @hot */
+export function projectInlineRuns(runs: InlineRuns, root: InlineRuns, start: number, end: number, removed: number[]): void {
+  runs.length = 0;
+  runs.gfm = root.gfm;
+  let removedBefore = 0;
+  for (let i = inlineRunAt(root, start); i < root.length && root.entries[i] < end; i += 5) {
+    const from = root.entries[i] - start;
+    const to = Math.min(root.entries[i + 1], end) - start;
+    while (removedBefore < removed.length && removed[removedBefore] < from) removedBefore++;
+    const first = from - removedBefore;
+    const last = to - removedBefore;
+    runs.mask.openerEnds.fill(last, first, last);
+    addInlineRun(runs, first, last, root.entries[i + 2]);
+  }
 }
 
 export function lastCloser(src: string, delimiter: number): number {

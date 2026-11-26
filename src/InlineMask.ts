@@ -4,7 +4,12 @@ import type { Links } from './Tokens.ts';
 
 export interface InlineMask {
   codes: Uint16Array;
+  rawCodes: Uint16Array;
+  nextParen: Int32Array;
   openerEnds: Int32Array;
+  nextEvent: Int32Array;
+  spans: number[];
+  window: MaskWindow | undefined;
   length: number;
   changed: boolean;
 }
@@ -15,12 +20,23 @@ export function copyInlineCodes(mask: InlineMask, source: string): void {
   mask.length = source.length;
   mask.changed = false;
   const codes = mask.codes;
+  const raw = mask.rawCodes;
+  const nextParen = mask.nextParen;
   const ends = mask.openerEnds;
+  const nextEvent = mask.nextEvent;
+  mask.spans.length = 0;
+  mask.window = undefined;
+  let event = source.length;
+  let paren = source.length;
   let runEnd = source.length;
   let next = -1;
   for (let i = source.length - 1; i >= 0; i--) {
     const code = source.charCodeAt(i);
-    codes[i] = code;
+    codes[i] = raw[i] = code;
+    if (code === 41) paren = i;
+    nextParen[i] = paren;
+    if (eventCode[code]) event = i;
+    nextEvent[i] = event;
     if (code !== next) runEnd = i + 1;
     if (code === 42 || code === 95 || code === 126) ends[i] = runEnd;
     next = code;
@@ -31,151 +47,293 @@ export function copyInlineCodes(mask: InlineMask, source: string): void {
 function growInlineCodes(mask: InlineMask, size: number): void {
   const length = Math.max(size, 64, mask.codes.length * 2);
   mask.codes = new Uint16Array(length);
+  mask.rawCodes = new Uint16Array(length);
+  mask.nextParen = new Int32Array(length);
   mask.openerEnds = new Int32Array(length);
+  mask.nextEvent = new Int32Array(length);
 }
 
 /** @hot */
-function bracketMask(mask: InlineMask, start: number, end: number): void {
-  const codes = mask.codes;
-  codes[start] = 91;
-  codes.fill(97, start + 1, end - 1);
-  codes[end - 1] = 93;
+export function projectInlineLabel(mask: InlineMask, root: InlineMask, start: number, end: number, removed: number[]): void {
+  const length = end - start - removed.length;
+  if (mask.codes.length < length) growInlineCodes(mask, length);
+  mask.length = length;
+  mask.changed = false;
+  mask.spans.length = 0;
+  mask.window = undefined;
+  let from = start;
+  let dest = 0;
+  let lastEvent = 0;
+  let lastParen = 0;
+  for (let i = 0; i <= removed.length; i++) {
+    const to = i === removed.length ? end : start + removed[i];
+    const size = to - from;
+    mask.rawCodes.set(root.rawCodes.subarray(from, to), dest);
+    for (let j = from; j < to;) {
+      const event = root.nextEvent[j];
+      if (event >= to) break;
+      const pos = dest + event - from;
+      mask.nextEvent.fill(pos, lastEvent, pos + 1);
+      lastEvent = pos + 1;
+      j = event + 1;
+    }
+    for (let j = from; j < to;) {
+      const paren = root.nextParen[j];
+      if (paren >= to) break;
+      const pos = dest + paren - from;
+      mask.nextParen.fill(pos, lastParen, pos + 1);
+      lastParen = pos + 1;
+      j = paren + 1;
+    }
+    dest += size;
+    from = to + 1;
+  }
+  mask.nextEvent.fill(length, lastEvent, length);
+  mask.nextParen.fill(length, lastParen, length);
+  mask.codes.set(mask.rawCodes.subarray(0, length));
+}
+
+const Event = {
+  Bang: 1,
+  OpenParen: 2,
+  CloseParen: 4,
+  OpenAngle: 8,
+  CloseAngle: 16,
+  OpenBracket: 32,
+  Backslash: 64,
+  CloseBracket: 128,
+  Tick: 256,
+} as const;
+
+const eventCode = new Uint16Array(128);
+eventCode[33] = Event.Bang;
+eventCode[40] = Event.OpenParen;
+eventCode[41] = Event.CloseParen;
+eventCode[60] = Event.OpenAngle;
+eventCode[62] = Event.CloseAngle;
+eventCode[91] = Event.OpenBracket;
+eventCode[92] = Event.Backslash;
+eventCode[93] = Event.CloseBracket;
+eventCode[96] = Event.Tick;
+
+const MaskCode = {
+  Brackets: 0,
+  Plus: 43,
+  CloseBracket: 93,
+} as const;
+
+export interface MaskWindow {
+  edits: number[];
+  spans: number[];
+  starts: number[];
+  stage: number;
+}
+
+/** @hot */
+function findMaskCode(edits: number[], start: number, end: number, pos: number): number {
+  let first = start / 3;
+  let last = end / 3;
+  while (first < last) {
+    const middle = (first + last) >> 1;
+    const index = middle * 3;
+    if (pos < edits[index]) last = middle;
+    else if (pos >= edits[index + 1]) first = middle + 1;
+    else {
+      const code = edits[index + 2];
+      if (code !== MaskCode.Brackets) return code;
+      return pos === edits[index] ? 91 : pos + 1 === edits[index + 1] ? 93 : 97;
+    }
+  }
+  return -1;
+}
+
+/** @hot */
+export function inlineMaskCode(mask: InlineMask, pos: number): number {
+  const window = mask.window;
+  if (!window) return mask.codes[pos];
+  const edits = window.edits;
+  let end = edits.length;
+  for (let stage = window.stage; stage >= 0; stage--) {
+    const start = window.starts[stage];
+    const code = findMaskCode(edits, start, end, pos);
+    if (code >= 0) return code;
+    end = start;
+  }
+  return mask.rawCodes[pos];
+}
+
+/** @hot */
+export function advanceMaskStage(mask: InlineMask): void {
+  const window = mask.window;
+  if (window) window.starts[++window.stage] = window.edits.length;
+}
+
+/** @hot */
+function writeMask(mask: InlineMask, start: number, end: number, code: number): void {
+  const window = mask.window;
+  if (window) {
+    window.edits.push(start, end, code);
+  } else if (code === MaskCode.Brackets) {
+    const codes = mask.codes;
+    codes[start] = 91;
+    codes.fill(97, start + 1, end - 1);
+    codes[end - 1] = 93;
+  } else {
+    mask.codes.fill(code, start, end);
+  }
   mask.changed = true;
 }
 
 /** @hot */
-function referenceLabelEnd(codes: Uint16Array, start: number, end: number): number {
+function nextEvent(mask: InlineMask, start: number, end: number, events: number): number {
+  const next = mask.nextEvent;
+  for (let i = start; i < end;) {
+    const pos = next[i];
+    if (pos >= end) break;
+    if (eventCode[inlineMaskCode(mask, pos)] & events) return pos;
+    i = pos + 1;
+  }
+  return end;
+}
+
+/** @hot */
+function referenceLabelEnd(mask: InlineMask, start: number, end: number): number {
   let first = start;
-  while (first < end && isStringWhitespace(codes[first])) first++;
-  if (codes[first] === 93) return -1;
+  while (first < end && isStringWhitespace(inlineMaskCode(mask, first))) first++;
+  if (first < end && inlineMaskCode(mask, first) === 93) return -1;
+
   let pos = start;
-  for (let count = 0; pos < end && count <= 999; count++) {
-    const code = codes[pos];
-    if (code === 93) return pos > start ? pos + 1 : -1;
-    if (code === 91 || count === 999) break;
-    pos += code === 92 ? 2 : 1;
+  let length = 0;
+  while (pos < end) {
+    const event = nextEvent(mask, pos, end, Event.OpenBracket | Event.CloseBracket | Event.Backslash);
+    length += event - pos;
+    if (event === end || length > 999) break;
+    const code = inlineMaskCode(mask, event);
+    if (code === 93) return event > start ? event + 1 : -1;
+    if (code === 91 || length === 999) break;
+    pos = event + 2;
+    length++;
   }
   return -1;
 }
 
 /** @hot */
-function nestedLabelEnd(codes: Uint16Array, pos: number, end: number): number {
+function nestedLabelEnd(mask: InlineMask, pos: number, end: number): number {
   let level = 1;
-  while (++pos < end) {
-    const code = codes[pos];
+  pos++;
+  while (pos < end) {
+    pos = nextEvent(mask, pos, end, Event.OpenBracket | Event.CloseBracket | Event.Backslash);
+    if (pos === end) break;
+    const code = inlineMaskCode(mask, pos++);
     if (code === 92) pos++;
     else if (code === 91) {
       if (++level > 2) break;
-    } else if (code === 93 && --level === 0) return pos + 1;
+    } else if (--level === 0) return pos;
   }
   return -1;
 }
 
 /** @hot */
-function ticksEnd(codes: Uint16Array, pos: number, end: number): number {
-  while (pos < end && codes[pos] === 96) pos++;
+function ticksEnd(mask: InlineMask, pos: number, end: number): number {
+  while (pos < end && inlineMaskCode(mask, pos) === 96) pos++;
   return pos;
 }
 
 /** @hot */
-function nextTicks(codes: Uint16Array, pos: number, end: number): number {
-  while (pos < end && codes[pos] !== 96) pos++;
-  return pos;
-}
-
-/** @hot */
-function fullReferenceEnd(codes: Uint16Array, pos: number, end: number): number {
+function fullReferenceEnd(mask: InlineMask, pos: number, end: number): number {
   let alternative = -1;
   for (let count = 0; count <= 999; count++) {
-    while (pos < end) {
-      const code = codes[pos];
-      if (code === 91 || code === 92 || code === 93 || code === 96) break;
-      pos++;
-    }
+    pos = nextEvent(mask, pos, end, Event.OpenBracket | Event.CloseBracket | Event.Backslash | Event.Tick);
     if (pos === end) break;
-    const code = codes[pos];
+    const code = inlineMaskCode(mask, pos);
     if (code === 93) {
-      if (pos + 2 < end && codes[pos + 1] === 91) {
-        const ref = referenceLabelEnd(codes, pos + 2, end);
+      if (pos + 2 < end && inlineMaskCode(mask, pos + 1) === 91) {
+        const ref = referenceLabelEnd(mask, pos + 2, end);
         if (ref >= 0) return ref;
       }
       break;
     }
     if (count === 999) break;
     if (code === 91) {
-      pos = nestedLabelEnd(codes, pos, end);
+      pos = nestedLabelEnd(mask, pos, end);
       if (pos < 0) break;
     } else if (code === 92) {
       pos += 2;
       if (pos >= end) break;
     } else {
-      const openEnd = ticksEnd(codes, pos, end);
-      if (openEnd - pos > 1 && openEnd + 2 < end && codes[openEnd] === 93 && codes[openEnd + 1] === 91) {
-        const ref = referenceLabelEnd(codes, openEnd + 2, end);
+      const openEnd = ticksEnd(mask, pos, end);
+      if (openEnd - pos > 1 && openEnd + 2 < end && inlineMaskCode(mask, openEnd) === 93 && inlineMaskCode(mask, openEnd + 1) === 91) {
+        const ref = referenceLabelEnd(mask, openEnd + 2, end);
         if (ref >= 0) alternative = ref;
       }
-      const close = nextTicks(codes, openEnd, end);
+      const close = nextEvent(mask, openEnd, end, Event.Tick);
       if (close === end) break;
-      pos = ticksEnd(codes, close, end);
+      pos = ticksEnd(mask, close, end);
     }
   }
   return alternative;
 }
 
 /** @hot */
-function referenceEnd(codes: Uint16Array, start: number, end: number): number {
-  const open = codes[start] === 33 ? start + 1 : start;
-  if (open >= end || codes[open] !== 91) return -1;
-  const full = fullReferenceEnd(codes, open + 1, end);
+function referenceEnd(mask: InlineMask, start: number, end: number): number {
+  const open = inlineMaskCode(mask, start) === 33 ? start + 1 : start;
+  if (open >= end || inlineMaskCode(mask, open) !== 91) return -1;
+  const full = fullReferenceEnd(mask, open + 1, end);
   if (full >= 0) return full;
-  const short = referenceLabelEnd(codes, open + 1, end);
+  const short = referenceLabelEnd(mask, open + 1, end);
   if (short < 0) return -1;
-  if (short + 1 < end && codes[short] === 91 && codes[short + 1] === 93
-    && (short + 2 === end || codes[short + 2] !== 40)) return short + 2;
-  return short === end || codes[short] !== 40 ? short : -1;
+  if (short + 1 < end && inlineMaskCode(mask, short) === 91 && inlineMaskCode(mask, short + 1) === 93
+    && (short + 2 === end || inlineMaskCode(mask, short + 2) !== 40)) return short + 2;
+  return short === end || inlineMaskCode(mask, short) !== 40 ? short : -1;
 }
 
 /** @hot */
-function referenceStart(codes: Uint16Array, start: number, end: number): number {
-  for (let i = end - 1; i > start; i--) {
-    if (codes[i] === 91) return i;
+function referenceStart(mask: InlineMask, start: number, end: number): number {
+  let ref = start;
+  for (let i = start + 1; i < end;) {
+    const open = nextEvent(mask, i, end, Event.OpenBracket);
+    if (open === end) break;
+    ref = open;
+    i = open + 1;
   }
-  return start + (codes[start] === 33 ? 1 : 0);
+  return ref;
 }
 
 /** @hot */
-function blockCodeEnd(codes: Uint16Array, start: number, end: number): number {
-  const open = ticksEnd(codes, start, end);
-  const close = nextTicks(codes, open, end);
+function blockCodeEnd(mask: InlineMask, start: number, end: number): number {
+  const open = ticksEnd(mask, start, end);
+  const close = nextEvent(mask, open, end, Event.Tick);
   if (close === end) return -1;
-  const limit = ticksEnd(codes, close, end);
+  const limit = ticksEnd(mask, close, end);
   return limit - close === open - start ? limit : -1;
 }
 
 /** @hot */
-function blockLinkEnd(codes: Uint16Array, start: number, end: number): number {
+function blockLinkEnd(mask: InlineMask, start: number, end: number): number {
   let pos = start + 1;
-  for (; pos < end; pos++) {
-    const code = codes[pos];
+  while (pos < end) {
+    pos = nextEvent(mask, pos, end, Event.OpenBracket | Event.CloseBracket | Event.Tick);
+    if (pos === end) return -1;
+    const code = inlineMaskCode(mask, pos);
     if (code === 93) break;
     if (code === 91) return -1;
-    if (code === 96) {
-      const after = blockCodeEnd(codes, pos, end);
-      if (after < 0) return -1;
-      pos = after - 1;
-    }
+    pos = blockCodeEnd(mask, pos, end);
+    if (pos < 0) return -1;
   }
-  if (pos + 1 >= end || codes[pos + 1] !== 40) return -1;
+  if (pos + 1 >= end || inlineMaskCode(mask, pos + 1) !== 40) return -1;
   let depth = 0;
-  while ((pos += 1) + 1 < end) {
-    const code = codes[pos + 1];
+  pos += 2;
+  while (pos < end) {
+    pos = nextEvent(mask, pos, end, Event.OpenParen | Event.CloseParen | Event.Backslash);
+    if (pos === end) break;
+    const code = inlineMaskCode(mask, pos++);
     if (code === 41) {
-      if (depth === 0) return pos + 2;
+      if (depth === 0) return pos;
       depth = 0;
     } else if (code === 40) {
       if (depth) break;
       depth = 1;
-    } else if (code === 92) {
+    } else {
       pos++;
     }
   }
@@ -183,64 +341,64 @@ function blockLinkEnd(codes: Uint16Array, start: number, end: number): number {
 }
 
 /** @hot */
-function blockAngleEnd(codes: Uint16Array, start: number, end: number): number {
-  if (codes[start + 1] === 32) return -1;
-  for (let pos = start + 1; pos < end; pos++) {
-    const code = codes[pos];
-    if (code === 60) break;
-    if (code === 62) return pos + 1;
-  }
-  return -1;
+function blockAngleEnd(mask: InlineMask, start: number, end: number): number {
+  if (inlineMaskCode(mask, start + 1) === 32) return -1;
+  const pos = nextEvent(mask, start + 1, end, Event.OpenAngle | Event.CloseAngle);
+  return pos < end && inlineMaskCode(mask, pos) === 62 ? pos + 1 : -1;
 }
 
 /** @hot */
 function hasTextLink(mask: InlineMask, source: string, start: number, end: number, rules: Rules, links: Links): boolean {
-  const codes = mask.codes;
-  for (let i = start; i < end; i++) {
-    const code = codes[i];
+  for (let pos = start; pos < end;) {
+    const i = nextEvent(mask, pos, end, Event.OpenBracket | Event.Tick | Event.OpenAngle);
+    if (i === end) break;
+    pos = i + 1;
+    const code = inlineMaskCode(mask, i);
     let after = -1;
     if (code === 91) {
-      after = blockLinkEnd(codes, i, end);
-      if (after >= 0 && (i === start || codes[i - 1] !== 33) && rules.inline.link.test(sourceText(source, i, after))) return true;
-    } else if (code === 96 && (i === start || codes[i - 1] !== 96)) {
-      after = blockCodeEnd(codes, i, end);
+      after = blockLinkEnd(mask, i, end);
+      if (after >= 0 && (i === start || inlineMaskCode(mask, i - 1) !== 33) && rules.inline.link.test(sourceText(source, i, after))) return true;
+    } else if (code === 96 && (i === start || inlineMaskCode(mask, i - 1) !== 96)) {
+      after = blockCodeEnd(mask, i, end);
     } else if (code === 60) {
-      after = blockAngleEnd(codes, i, end);
+      after = blockAngleEnd(mask, i, end);
     }
-    if (after >= 0) i = after - 1;
+    if (after >= 0) pos = after;
   }
-  for (let i = start; i < end; i++) {
-    const code = codes[i];
-    if (code !== 91 && code !== 33) continue;
-    const after = referenceEnd(codes, i, end);
+  for (let pos = start; pos < end;) {
+    const i = nextEvent(mask, pos, end, Event.OpenBracket | Event.Bang);
+    if (i === end) break;
+    pos = i + 1;
+    const after = referenceEnd(mask, i, end);
     if (after < 0) continue;
-    const ref = referenceStart(codes, i, after);
-    if (code !== 33 && Object.hasOwn(links, normalizeLabel(source, ref + 1, after - 1))
+    const ref = referenceStart(mask, i, after);
+    if (inlineMaskCode(mask, i) !== 33 && Object.hasOwn(links, normalizeLabel(source, ref + 1, after - 1))
       && (ref <= i + 1 || !hasTextLink(mask, source, i + 1, ref - 1, rules, links))) return true;
-    i = after - 1;
+    pos = after;
   }
   return false;
 }
 
 /** @hot */
 export function maskReferences(mask: InlineMask, source: string, start: number, end: number, rules: Rules, links: Links): void {
-  const codes = mask.codes;
-  for (let i = start; i < end; i++) {
-    const code = codes[i];
-    if (code !== 91 && code !== 33) continue;
-    const after = referenceEnd(codes, i, end);
+  for (let pos = start; pos < end;) {
+    const i = nextEvent(mask, pos, end, Event.OpenBracket | Event.Bang);
+    if (i === end) break;
+    pos = i + 1;
+    const after = referenceEnd(mask, i, end);
     if (after < 0) continue;
-    const ref = referenceStart(codes, i, after);
+    mask.spans.push(i, after);
+    const ref = referenceStart(mask, i, after);
     if (Object.hasOwn(links, normalizeLabel(source, ref + 1, after - 1))) {
-      if (ref > i + 1 && code !== 33 && hasTextLink(mask, source, i + 1, ref - 1, rules, links)) {
+      if (ref > i + 1 && inlineMaskCode(mask, i) !== 33 && hasTextLink(mask, source, i + 1, ref - 1, rules, links)) {
         maskReferences(mask, source, i + 1, ref - 1, rules, links);
-        codes[ref - 1] = 93;
-        bracketMask(mask, ref, after);
+        writeMask(mask, ref - 1, ref, MaskCode.CloseBracket);
+        writeMask(mask, ref, after, MaskCode.Brackets);
       } else {
-        bracketMask(mask, i, after);
+        writeMask(mask, i, after, MaskCode.Brackets);
       }
     }
-    i = after - 1;
+    pos = after;
   }
 }
 
@@ -266,10 +424,10 @@ function isOpenQuote(code: number, source: string, offset: number): boolean {
 }
 
 /** @hot */
-export function delimiterOpener(mask: InlineMask, source: string, offset: number, delimiter: number, gfm: boolean, pedantic: boolean): number {
+export function delimiterOpener(mask: InlineMask, source: string, offset: number, limit: number, delimiter: number, gfm: boolean, pedantic: boolean): number {
   const end = mask.openerEnds[offset];
   const length = end - offset;
-  if (end >= source.length || (delimiter === 126 && (!gfm || length > 2))) return 0;
+  if (end >= limit || (delimiter === 126 && (!gfm || length > 2))) return 0;
   const next = source.charCodeAt(end);
   if (isStringWhitespace(next)) return 0;
   if ((next === 126 && gfm && delimiter !== 126)
@@ -279,33 +437,35 @@ export function delimiterOpener(mask: InlineMask, source: string, offset: number
 }
 
 /** @hot */
-export function maskEscapes(mask: InlineMask, source: string): void {
-  const codes = mask.codes;
-  const end = mask.length;
-  for (let i = 0; i < end; i++) {
-    const code = codes[i];
-    if (code === 92 && i + 1 < end && isInlinePunctuation(codes[i + 1], source, i + 1)) {
-      const width = source.codePointAt(i + 1)! > 0xffff ? 3 : 2;
-      codes.fill(43, i, i + width);
-      mask.changed = true;
-      i += width - 1;
-    } else if (code === 96) {
-      const open = ticksEnd(codes, i, end);
+export function maskEscapes(mask: InlineMask, source: string, start: number, end: number): void {
+  for (let pos = start; pos < end;) {
+    const i = nextEvent(mask, pos, end, Event.Tick | Event.Backslash);
+    if (i === end) break;
+    pos = i + 1;
+    if (inlineMaskCode(mask, i) === 92) {
+      if (pos < end && isInlinePunctuation(inlineMaskCode(mask, pos), source, pos)) {
+        const width = pos + 1 < end && source.codePointAt(pos)! > 0xffff ? 3 : 2;
+        pos = i + width;
+        writeMask(mask, i, pos, MaskCode.Plus);
+        mask.spans.push(i, pos);
+      }
+    } else {
+      const open = ticksEnd(mask, i, end);
       const width = open - i;
-      i = open - 1;
-      for (let close = nextTicks(codes, open, end); close < end;) {
-        const next = ticksEnd(codes, close, end);
+      pos = open;
+      for (let close = nextEvent(mask, open, end, Event.Tick); close < end;) {
+        const next = ticksEnd(mask, close, end);
         if (next - close === width) {
-          for (let pos = open; pos < close; pos++) {
-            if (codes[pos] === 96) {
-              codes[pos] = 43;
-              mask.changed = true;
-            }
+          mask.spans.push(i, next);
+          for (let inner = nextEvent(mask, open, close, Event.Tick); inner < close;) {
+            const after = ticksEnd(mask, inner, close);
+            writeMask(mask, inner, after, MaskCode.Plus);
+            inner = nextEvent(mask, after, close, Event.Tick);
           }
-          i = next - 1;
+          pos = next;
           break;
         }
-        close = nextTicks(codes, next, end);
+        close = nextEvent(mask, next, end, Event.Tick);
       }
     }
   }
@@ -315,6 +475,10 @@ export function maskEscapes(mask: InlineMask, source: string): void {
 export function inlineMaskText(mask: InlineMask, start: number, end: number): string {
   const codes = mask.codes;
   let text = '';
+  if (mask.window) {
+    for (let i = start; i < end; i++) text += String.fromCharCode(inlineMaskCode(mask, i));
+    return text;
+  }
   for (let i = start; i < end; i += 4096) {
     text += String.fromCharCode(...codes.subarray(i, Math.min(i + 4096, end)));
   }
@@ -322,33 +486,45 @@ export function inlineMaskText(mask: InlineMask, start: number, end: number): st
 }
 
 /** @hot */
-function htmlMaskEnd(mask: InlineMask, source: string, start: number, rules: Rules, edited: boolean): number {
+function htmlMaskEnd(mask: InlineMask, source: string, start: number, left: number, end: number, rules: Rules, edited: boolean): number {
   const { tag, autolink } = rules.inline;
   const cursor = rules.cursor?.inline;
-  if (!edited) {
+  if (!edited && left === 0 && end === source.length) {
     const match = execAt(tag, source, start, cursor?.tag) || execAt(autolink, source, start, cursor?.autolink);
     return match ? start + match[0].length : -1;
   }
-  let end = mask.length;
-  while (mask.codes[end - 1] !== 62) end--;
+  while (inlineMaskCode(mask, end - 1) !== 62) end--;
   const text = inlineMaskText(mask, start, end);
   const match = tag.exec(text) || autolink.exec(text);
   return match ? start + match[0].length : -1;
 }
 
 /** @hot */
-export function maskBlocks(mask: InlineMask, source: string, rules: Rules): void {
-  const codes = mask.codes;
-  const end = mask.length;
+export function maskBlocks(mask: InlineMask, source: string, left: number, end: number, rules: Rules): void {
   const edited = mask.changed;
-  for (let i = 0; i < end; i++) {
-    const code = codes[i];
+  for (let pos = left; pos < end;) {
+    const i = nextEvent(mask, pos, end, Event.OpenBracket | Event.Tick | Event.OpenAngle);
+    if (i === end) break;
+    pos = i + 1;
+    const code = inlineMaskCode(mask, i);
     let after = -1;
-    if (code === 91) after = blockLinkEnd(codes, i, end);
-    else if (code === 96 && (i === 0 || codes[i - 1] !== 96)) after = blockCodeEnd(codes, i, end);
-    else if (code === 60 && blockAngleEnd(codes, i, end) >= 0) after = htmlMaskEnd(mask, source, i, rules, edited);
+    if (code === 91) after = blockLinkEnd(mask, i, end);
+    else if (code === 96 && (i === left || inlineMaskCode(mask, i - 1) !== 96)) after = blockCodeEnd(mask, i, end);
+    else if (code === 60 && blockAngleEnd(mask, i, end) >= 0) after = htmlMaskEnd(mask, source, i, left, end, rules, edited);
     if (after < 0) continue;
-    bracketMask(mask, i, after);
-    i = after - 1;
+    mask.spans.push(i, after);
+    writeMask(mask, i, after, MaskCode.Brackets);
+    pos = after;
   }
+}
+
+/** @hot */
+export function crossesMaskBoundary(mask: InlineMask, start: number, end: number): boolean {
+  const spans = mask.spans;
+  for (let i = 0; i < spans.length; i += 2) {
+    const from = spans[i];
+    const to = spans[i + 1];
+    if ((from < start && to > start) || (from < end && to > end)) return true;
+  }
+  return false;
 }

@@ -4,9 +4,10 @@ import { _Tokenizer } from './Tokenizer.ts';
 import { _defaults } from './defaults.ts';
 import { other, block, inline, type Rules } from './rules.ts';
 import { callMaskHook, hookSlots } from './HookDispatch.ts';
-import { execAt, normalizeLabel, preparedLexerRules, scanCloserHints, scanInlineRuns, sourceText } from './helpers.ts';
+import { classifyInlineRuns, execAt, normalizeLabel, preparedLexerRules, inlineWindowHints, projectInlineRuns, scanCloserHints, scanInlineRuns, sourceText } from './helpers.ts';
 import type { InlineRuns } from './helpers.ts';
-import { copyInlineCodes, inlineMaskText, maskBlocks, maskEscapes, maskReferences } from './InlineMask.ts';
+import { advanceMaskStage, copyInlineCodes, crossesMaskBoundary, inlineMaskText, maskBlocks, maskEscapes, maskReferences, projectInlineLabel } from './InlineMask.ts';
+import type { InlineMask, MaskWindow } from './InlineMask.ts';
 import type { Token, TokensList, Tokens } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
 
@@ -151,6 +152,13 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   #closers = { star: -1, underscore: -1, tilde: -1 };
   #runTables: InlineRuns[] = [];
   #runDepth = 0;
+  #inlineSource = '';
+  #inlineRoot = '';
+  #inlineStart = 0;
+  #inlineRuns: InlineRuns | undefined;
+  #maskWindows: MaskWindow[] = [];
+  #windowDepth = 0;
+  #labelEscapes: number[] = [];
   #userMaskRules = false;
   #userDelimiters = false;
   #maskHook: ((src: string) => string) | undefined;
@@ -606,13 +614,146 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     // `'[a](b'.repeat(n)`. Extension tokenizers can pass generated text to
     // nested runs, so each run must check its own source.
     const prevLinkParenPossible = this.state.linkParenPossible;
+    const previousSource = this.#inlineSource;
+    const previousRoot = this.#inlineRoot;
+    const previousStart = this.#inlineStart;
+    const previousRuns = this.#inlineRuns;
+    this.#inlineSource = this.#inlineRoot = src;
+    this.#inlineStart = 0;
+    this.#inlineRuns = undefined;
     this.state.linkParenPossible = src.includes(')');
     try {
       return this.#inlineTokensInner(src, tokens);
     } finally {
       // Restore the outer run's flag for the rest of its loop.
       this.state.linkParenPossible = prevLinkParenPossible;
+      this.#inlineSource = previousSource;
+      this.#inlineRoot = previousRoot;
+      this.#inlineStart = previousStart;
+      this.#inlineRuns = previousRuns;
     }
+  }
+
+  /** @internal */
+  /** @hot */
+  labelEscapes(): number[] {
+    this.#labelEscapes.length = 0;
+    return this.#labelEscapes;
+  }
+
+  /** @internal */
+  /** @hot */
+  inlineChildren(text: string, source: string, offset: number, length: number, removed: number[] | undefined): Token[] {
+    const runs = this.#inlineRuns;
+    if (this.#userDelimiters || this.#userMaskRules || source !== this.#inlineSource) return this.inlineTokens(text);
+    if (!runs) return this.#tokenizeInlines(text, text, [], undefined);
+    if (removed?.length) return this.#inlineProjectedLabel(text, offset, length, removed, runs);
+    const start = this.#inlineStart + offset;
+    const end = start + length;
+    const previous = this.#inlineStart;
+    const hints = this.#closers;
+    const { star, underscore, tilde } = hints;
+    const mask = runs.mask;
+    const parentParens = this.state.linkParenPossible;
+    this.#inlineStart = start;
+    this.#inlineSource = text;
+    this.state.linkParenPossible = start < end && mask.nextParen[start] < end;
+    try {
+      if (start < end && crossesMaskBoundary(mask, start, end)) {
+        return this.#inlineClippedMask(text, runs, start, end);
+      }
+      inlineWindowHints(runs, start, end, hints);
+      return this.#tokenizeInlines(text, this.#inlineRoot, [], runs);
+    } finally {
+      this.state.linkParenPossible = parentParens;
+      this.#inlineStart = previous;
+      this.#inlineSource = source;
+      hints.star = star;
+      hints.underscore = underscore;
+      hints.tilde = tilde;
+    }
+  }
+
+  /** @hot */
+  #inlineClippedMask(text: string, runs: InlineRuns, start: number, end: number): Token[] {
+    const depth = this.#windowDepth++;
+    const window = this.#maskWindows[depth] ??= { edits: [], spans: [], starts: [0, 0, 0], stage: 0 };
+    const mask = runs.mask;
+    const parentWindow = mask.window;
+    const parentSpans = mask.spans;
+    const changed = mask.changed;
+    window.edits.length = window.spans.length = 0;
+    window.stage = 0;
+    mask.window = window;
+    mask.spans = window.spans;
+    mask.changed = false;
+    try {
+      this.#fillInlineMask(mask, this.#inlineRoot, start, end);
+      inlineWindowHints(runs, start, end, this.#closers);
+      return this.#tokenizeInlines(text, this.#inlineRoot, [], runs);
+    } finally {
+      mask.window = parentWindow;
+      mask.spans = parentSpans;
+      mask.changed = changed;
+      this.#windowDepth = depth;
+    }
+  }
+
+  /** @hot */
+  #inlineProjectedLabel(text: string, offset: number, length: number, removed: number[], parent: InlineRuns): Token[] {
+    const root = this.#inlineRoot;
+    const source = this.#inlineSource;
+    const start = this.#inlineStart;
+    const parentParens = this.state.linkParenPossible;
+    const hints = this.#closers;
+    const { star, underscore, tilde } = hints;
+    const depth = this.#runDepth++;
+    const runs = this.#tableAt(depth);
+    const first = start + offset;
+    const end = first + length;
+    projectInlineLabel(runs.mask, parent.mask, first, end, removed);
+    projectInlineRuns(runs, parent, first, end, removed);
+    this.#inlineRoot = this.#inlineSource = text;
+    this.#inlineStart = 0;
+    this.#inlineRuns = runs;
+    this.state.linkParenPossible = text.length > 0 && runs.mask.nextParen[0] < text.length;
+    try {
+      this.#fillInlineMask(runs.mask, text, 0, text.length);
+      classifyInlineRuns(runs, text);
+      inlineWindowHints(runs, 0, text.length, hints);
+      return this.#tokenizeInlines(text, text, [], runs);
+    } finally {
+      this.state.linkParenPossible = parentParens;
+      this.#inlineRoot = root;
+      this.#inlineSource = source;
+      this.#inlineStart = start;
+      this.#inlineRuns = parent;
+      this.#runDepth = depth;
+      hints.star = star;
+      hints.underscore = underscore;
+      hints.tilde = tilde;
+    }
+  }
+
+  /** @hot */
+  #tableAt(depth: number): InlineRuns {
+    const table = this.#runTables[depth] ??= {
+      entries: new Int32Array(0),
+      length: 0,
+      gfm: false,
+      mask: {
+        codes: new Uint16Array(0),
+        rawCodes: new Uint16Array(0),
+        nextParen: new Int32Array(0),
+        openerEnds: new Int32Array(0),
+        nextEvent: new Int32Array(0),
+        spans: [],
+        window: undefined,
+        length: 0,
+        changed: false,
+      },
+    };
+    return table;
   }
 
   /** @hot */
@@ -622,23 +763,15 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     const hints = this.#closers;
     const { star, underscore, tilde } = hints;
     const depth = this.#runDepth++;
-    const runs = this.#runTables[depth] ??= {
-      entries: new Int32Array(0),
-      length: 0,
-      gfm: false,
-      mask: { codes: new Uint16Array(0), openerEnds: new Int32Array(0), length: 0, changed: false },
-    };
+    const runs = this.#tableAt(depth);
     try {
-      const rules = this.tokenizer.rules;
       let userMask: string | undefined;
       if (this.#userMaskRules) {
         userMask = this.#applyUserMaskRules(src);
       } else {
         const mask = runs.mask;
         copyInlineCodes(mask, src);
-        if (src.includes('[')) maskReferences(mask, src, 0, src.length, rules, this.tokens.links);
-        if (src.includes('\\') || src.includes('`')) maskEscapes(mask, src);
-        if (src.includes('[') || src.includes('`') || src.includes('<')) maskBlocks(mask, src, rules);
+        this.#fillInlineMask(mask, src, 0, src.length);
       }
       if (this.#userDelimiters || this.#userMaskRules) {
         const masked = this.#maskedForUser(src, runs, userMask);
@@ -647,7 +780,10 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         return this.#tokenizeInlines(src, masked, tokens, undefined);
       }
       runs.gfm = !!this.options.gfm && !this.options.pedantic;
-      scanInlineRuns(src, hints, runs);
+      scanInlineRuns(src, runs);
+      classifyInlineRuns(runs, src);
+      inlineWindowHints(runs, 0, src.length, hints);
+      this.#inlineRuns = runs;
       return this.#tokenizeInlines(src, src, tokens, runs);
     } finally {
       this.#runDepth = depth;
@@ -655,6 +791,17 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       hints.underscore = underscore;
       hints.tilde = tilde;
     }
+  }
+
+  /** @hot */
+  #fillInlineMask(mask: InlineMask, source: string, start: number, end: number): void {
+    if (start >= end || mask.nextEvent[start] >= end) return;
+    const rules = this.tokenizer.rules;
+    maskReferences(mask, source, start, end, rules, this.tokens.links);
+    advanceMaskStage(mask);
+    maskEscapes(mask, source, start, end);
+    advanceMaskStage(mask);
+    maskBlocks(mask, source, start, end, rules);
   }
 
   /** @hotIgnore User adapter: one masked string and one hook call per inline run. */
@@ -666,7 +813,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
 
   /** @hot */
   #tokenizeInlines(src: string, maskedSrc: string, tokens: Token[], runs: InlineRuns | undefined): Token[] {
-    const base = maskedSrc.length - src.length;
+    const base = runs ? this.#inlineStart : maskedSrc.length - src.length;
     let keepPrevChar = false;
     let prevChar = '';
     let offset = 0;
