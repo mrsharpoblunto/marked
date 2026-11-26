@@ -81,7 +81,7 @@
     "build:esbuild": "node esbuild.config.js",
     "build:man": "marked-man man/marked.1.md > man/marked.1",
     "build:reset": "rimraf ./lib ./public",
-    "build:types": "tsc && dts-bundle-generator --export-referenced-types --project tsconfig.json -o lib/marked.d.ts src/marked.ts",
+    "build:types": "tsc && dts-bundle-generator --export-referenced-types --project tsconfig.json -o lib/marked.d.ts src/marked.ts && node scripts/strip-hot-tags.mjs",
     "lint": "eslint --fix",
     "rules": "node test/rules.js",
     "test": "npm run build:reset && npm run build:docs && npm run test:specs && npm run test:unit && npm run test:umd && npm run test:cjs && npm run test:types && npm run test:lint",

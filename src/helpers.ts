@@ -1,17 +1,146 @@
-import { other } from './rules.ts';
+import type { CloserHints } from './InlineMask.ts';
+import { block, inline, noopTest, other } from './rules.ts';
+
+/** @hotIgnore Output: at most one string for each token field. */
+export function sourceText(src: string, start: number, end: number): string {
+  return start === 0 && end === src.length ? src : src.slice(start, end);
+}
+
+/** @hot */
+export function isStringWhitespace(code: number): boolean {
+  return (code >= 9 && code <= 13) || code === 32 || code === 160 || code === 0x1680
+    || (code >= 0x2000 && code <= 0x200a) || code === 0x2028 || code === 0x2029
+    || code === 0x202f || code === 0x205f || code === 0x3000 || code === 0xfeff;
+}
+
+/** @hot */
+export function trimStartOffset(src: string, start: number, end: number): number {
+  while (start < end && isStringWhitespace(src.charCodeAt(start))) start++;
+  return start;
+}
+
+/** @hot */
+export function trimEndOffset(src: string, start: number, end: number): number {
+  while (end > start && isStringWhitespace(src.charCodeAt(end - 1))) end--;
+  return end;
+}
+
+interface CursorRule {
+  original: RegExp;
+  sticky: RegExp | null;
+}
+
+// Rule sets share expressions. Compile each expression once at module setup.
+const preparedRules = new WeakMap<RegExp, CursorRule>();
+
+function prepareRule(original: RegExp): CursorRule {
+  let rule = preparedRules.get(original);
+  if (!rule) {
+    let sticky = null;
+    if (original !== noopTest) {
+      // Remove start anchors while preserving escaped characters and classes.
+      const pattern = original.source.replace(/\\.|\[(?:\\.|[^\]\\])*\]|\^/g, part => part === '^' ? '' : part);
+      sticky = new RegExp(pattern, original.flags.replace(/[gy]/g, '') + 'y');
+    }
+    rule = { original, sticky };
+    preparedRules.set(original, rule);
+  }
+  return rule;
+}
+
+function prepareRules<K extends string>(keys: readonly K[], rules: Record<K, RegExp>): Record<K, CursorRule> {
+  return Object.fromEntries(keys.map(key => [key, prepareRule(rules[key])])) as Record<K, CursorRule>;
+}
+
+const blockKeys = ['code', 'fences', 'heading', 'blockquote', 'list', 'hr', 'html', 'def', 'table', 'lheading', 'paragraph', 'text'] as const;
+const inlineKeys = ['code', 'tag', 'autolink', 'escape', 'link', 'reflink', 'nolink', 'emStrongLDelim', 'br', 'delLDelim', 'url', 'text', 'punctuation'] as const;
+const preparedBlock = {
+  normal: prepareRules(blockKeys, block.normal),
+  gfm: prepareRules(blockKeys, block.gfm),
+  pedantic: prepareRules(blockKeys, block.pedantic),
+};
+
+function prepareInline(rules: typeof inline.normal) {
+  return {
+    ...prepareRules(inlineKeys, rules),
+    star: rules.emStrongRDelimAst,
+    underscore: rules.emStrongRDelimUnd,
+    tilde: rules.delRDelim,
+  };
+}
+
+const preparedInline = {
+  normal: prepareInline(inline.normal),
+  gfm: prepareInline(inline.gfm),
+  breaks: prepareInline(inline.breaks),
+  pedantic: prepareInline(inline.pedantic),
+};
+
+const preparedOther = {
+  blockquoteStart: prepareRule(other.blockquoteStart),
+  listInterruptsParagraph: prepareRule(other.listInterruptsParagraph),
+  htmlBegin: prepareRule(other.htmlBeginRegex(4)),
+  tableHeader: prepareRule(other.tableHeader),
+  textIndentedContinuation: prepareRule(other.textIndentedContinuation),
+  unicodeAlphaNumeric: prepareRule(other.unicodeAlphaNumeric),
+};
+
+export interface PreparedRules {
+  block: typeof preparedBlock.normal;
+  inline: typeof preparedInline.normal;
+  other: typeof preparedOther;
+}
+
+export const preparedLexerRules = {
+  normal: { block: preparedBlock.normal, inline: preparedInline.normal, other: preparedOther },
+  gfm: { block: preparedBlock.gfm, inline: preparedInline.gfm, other: preparedOther },
+  breaks: { block: preparedBlock.gfm, inline: preparedInline.breaks, other: preparedOther },
+  pedantic: { block: preparedBlock.pedantic, inline: preparedInline.pedantic, other: preparedOther },
+};
+
+/** @hotIgnore User adapter: one source suffix per custom rule call. */
+function execUserRule(rule: RegExp, src: string, offset: number): RegExpExecArray | null {
+  return rule.exec(src.slice(offset));
+}
+
+/** @hot */
+export function execAt(rule: RegExp, src: string, offset: number, prepared: CursorRule | undefined): RegExpExecArray | null {
+  if (offset === 0) return rule.exec(src);
+  if (prepared?.original !== rule) return execUserRule(rule, src, offset);
+  const sticky = prepared.sticky;
+  if (!sticky) return null;
+  sticky.lastIndex = offset;
+  return sticky.exec(src);
+}
+
+/** @hotIgnore User adapter: one character string per custom rule test. */
+function testUserCharacter(rule: RegExp, src: string, offset: number, width: number): boolean {
+  return rule.test(src.slice(offset, offset + width));
+}
+
+/** @hot */
+export function testCharacterAt(rule: RegExp, src: string, offset: number, width: number, prepared: CursorRule | undefined): boolean {
+  if (prepared?.original !== rule || !prepared.sticky) return testUserCharacter(rule, src, offset, width);
+  prepared.sticky.lastIndex = offset;
+  return prepared.sticky.test(src);
+}
 
 /**
  * Helpers
  */
-const escapeReplacements: { [index: string]: string } = {
-  '&': '&amp;',
-  '<': '&lt;',
-  '>': '&gt;',
-  '"': '&quot;',
-  "'": '&#39;',
-};
-const getEscapeReplacement = (ch: string) => escapeReplacements[ch];
+/** @hot */
+function getEscapeReplacement(ch: string): string {
+  switch (ch.charCodeAt(0)) {
+    case 38: return '&amp;';
+    case 60: return '&lt;';
+    case 62: return '&gt;';
+    case 34: return '&quot;';
+    case 39: return '&#39;';
+    default: return ch;
+  }
+}
 
+/** @hot */
 export function escapeHtmlEntities(html: string, encode?: boolean) {
   if (encode) {
     if (other.escapeTest.test(html)) {
@@ -31,22 +160,22 @@ export function escapeHtmlEntities(html: string, encode?: boolean) {
  * character they name. Values that are zero, out of range, or a surrogate become the
  * replacement character.
  */
+/** @hot */
 export function decodeNumericCharacterReferences(text: string) {
   if (!other.numericCharacterReference.test(text)) {
     return text;
   }
   // A decoded character must not join its neighbours into a new reference,
   // so every `&` that is not already one is escaped here.
-  return text.replace(other.numericCharacterReferenceOrAmpersand, (ref: string, dec?: string, hex?: string) => {
-    if (dec === undefined && hex === undefined) {
-      return '&amp;';
-    }
-    const code = dec === undefined ? Number.parseInt(hex!, 16) : Number.parseInt(dec, 10);
-    if (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) {
-      return '�';
-    }
-    return code === 38 ? '&amp;' : String.fromCodePoint(code);
-  });
+  return text.replace(other.numericCharacterReferenceOrAmpersand, decodeNumericReference);
+}
+
+/** @hot */
+function decodeNumericReference(ref: string, dec: string | undefined, hex: string | undefined): string {
+  if (dec === undefined && hex === undefined) return '&amp;';
+  const code = dec === undefined ? Number.parseInt(hex!, 16) : Number.parseInt(dec, 10);
+  if (code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return '�';
+  return code === 38 ? '&amp;' : String.fromCodePoint(code);
 }
 
 export function cleanUrl(href: string) {
@@ -58,92 +187,61 @@ export function cleanUrl(href: string) {
   return href;
 }
 
-export function splitCells(tableRow: string, count?: number) {
-  // ensure that every cell-delimiting pipe has a space
-  // before it to distinguish it from an escaped pipe
-  const row = tableRow.replace(other.findPipe, (match, offset, str) => {
-      let escaped = false;
-      let curr = offset;
-      while (--curr >= 0 && str[curr] === '\\') escaped = !escaped;
-      if (escaped) {
-        // odd number of slashes means | is escaped
-        // so we leave it alone
-        return '|';
-      } else {
-        // add space before unescaped |
-        return ' |';
-      }
-    }),
-    cells = row.split(other.splitPipe);
-  let i = 0;
-
-  // First/last cell in a row cannot be empty if it has no leading/trailing pipe
-  if (!cells[0].trim()) {
-    cells.shift();
-  }
-  if (cells.length > 0 && !cells.at(-1)?.trim()) {
-    cells.pop();
-  }
-
-  if (count) {
-    if (cells.length > count) {
-      cells.splice(count);
-    } else {
-      while (cells.length < count) cells.push('');
+/** @hot */
+export function splitCells(tableRow: string, rowStart: number, rowEnd: number, count: number): string[] {
+  const cells: string[] = [];
+  let start = rowStart;
+  let escaped = false;
+  let escapedPipe = false;
+  for (let i = rowStart; i <= rowEnd; i++) {
+    const atEnd = i === rowEnd;
+    const code = tableRow.charCodeAt(i);
+    if (!atEnd && code === 92) {
+      escaped = !escaped;
+      continue;
     }
+    if (atEnd || (code === 124 && !escaped)) {
+      const left = trimStartOffset(tableRow, start, i);
+      const right = trimEndOffset(tableRow, left, i);
+      if (left < right || (start !== rowStart && !atEnd)) {
+        const cell = sourceText(tableRow, left, right);
+        cells.push(escapedPipe ? cell.replace(other.slashPipe, '|') : cell);
+        if (count && cells.length === count) return cells;
+      }
+      start = i + 1;
+      escapedPipe = false;
+    } else if (code === 124) {
+      escapedPipe = true;
+    }
+    escaped = false;
   }
-
-  for (; i < cells.length; i++) {
-    // leading or trailing whitespace is ignored per the gfm spec
-    cells[i] = cells[i].trim().replace(other.slashPipe, '|');
+  if (count) {
+    while (cells.length < count) cells.push('');
   }
   return cells;
 }
 
-/**
- * Remove trailing 'c's. Equivalent to str.replace(/c*$/, '').
- * /c*$/ is vulnerable to REDOS.
- *
- * @param str
- * @param c
- * @param invert Remove suffix of non-c chars instead. Default falsey.
- */
-export function rtrim(str: string, c: string, invert?: boolean) {
-  const l = str.length;
-  if (l === 0) {
-    return '';
-  }
-
-  // Length of suffix matching the invert condition.
-  let suffLen = 0;
-
-  // Step left until we fail to match the invert condition.
-  while (suffLen < l) {
-    const currChar = str.charAt(l - suffLen - 1);
-    if (currChar === c && !invert) {
-      suffLen++;
-    } else if (currChar !== c && invert) {
-      suffLen++;
-    } else {
-      break;
-    }
-  }
-
-  return str.slice(0, l - suffLen);
+/** @hot */
+export function withoutTrailingNewlines(src: string): string {
+  let end = src.length;
+  while (src.charCodeAt(end - 1) === 10) end--;
+  return sourceText(src, 0, end);
 }
 
+/** @hot */
 export function trimTrailingBlankLines(str: string) {
-  const lines = str.split('\n');
-  let end = lines.length - 1;
-  while (end >= 0 && other.blankLine.test(lines[end])) {
-    end--;
+  let lineEnd = str.length;
+  let blankLines = 0;
+  for (let i = lineEnd - 1; i >= 0; i--) {
+    const code = str.charCodeAt(i);
+    if (code === 10) {
+      blankLines++;
+      lineEnd = i;
+    } else if (code !== 32 && code !== 9) {
+      return blankLines > 1 ? sourceText(str, 0, lineEnd) : str;
+    }
   }
-  if (lines.length - end <= 2) {
-    // we want to keep single trailing blank lines
-    return str;
-  }
-
-  return lines.slice(0, end + 1).join('\n');
+  return blankLines === 0 ? str : '';
 }
 
 /**
@@ -153,27 +251,60 @@ export function trimTrailingBlankLines(str: string) {
  * through upper case does, as in commonmark.js; the final `toLowerCase()`
  * keeps the folded label lower case, the form `def.tag` has always used.
  */
-export function normalizeLabel(label: string) {
-  // The spec also asks for leading and trailing spaces, tabs and line endings
-  // to be stripped, and for internal runs of them to collapse to one space.
-  // Doing it here keeps every call site in agreement: the definition and the
-  // reference have to normalize to the same key.
-  return label.trim().replace(other.multipleSpaceGlobal, ' ').toLowerCase().toUpperCase().toLowerCase();
+/** @hot */
+export function normalizeLabel(label: string, first = 0, last = label.length): string {
+  const start = trimStartOffset(label, first, last);
+  const end = trimEndOffset(label, start, last);
+  let needsRewrite = false;
+  for (let i = start; i < end; i++) {
+    const code = label.charCodeAt(i);
+    if (code > 127) {
+      const text = sourceText(label, start, end);
+      return text.replace(other.multipleSpaceGlobal, ' ').toLowerCase().toUpperCase().toLowerCase();
+    }
+    if ((code >= 65 && code <= 90) || (code >= 9 && code <= 13)
+      || (code === 32 && label.charCodeAt(i - 1) === 32)) {
+      needsRewrite = true;
+    }
+  }
+
+  if (!needsRewrite) return sourceText(label, start, end);
+  let result = '';
+  let span = start;
+  for (let i = start; i < end; i++) {
+    const code = label.charCodeAt(i);
+    if (code >= 65 && code <= 90) {
+      result += label.slice(span, i);
+      result += String.fromCharCode(code + 32);
+      span = i + 1;
+    } else if (isStringWhitespace(code)) {
+      const next = trimStartOffset(label, i + 1, end);
+      if (code !== 32 || next !== i + 1) {
+        result += label.slice(span, i);
+        result += ' ';
+        span = next;
+      }
+      i = next - 1;
+    }
+  }
+  return result + label.slice(span, end);
 }
 
-export function findClosingBracket(str: string, b: string) {
+/** @hot */
+export function findClosingParen(str: string) {
   // an opening bracket on its own is still unbalanced, so both have to be absent
-  if (str.indexOf(b[0]) === -1 && str.indexOf(b[1]) === -1) {
+  if (str.indexOf('(') === -1 && str.indexOf(')') === -1) {
     return -1;
   }
 
   let level = 0;
   for (let i = 0; i < str.length; i++) {
-    if (str[i] === '\\') {
+    const code = str.charCodeAt(i);
+    if (code === 92) {
       i++;
-    } else if (str[i] === b[0]) {
+    } else if (code === 40) {
       level++;
-    } else if (str[i] === b[1]) {
+    } else if (code === 41) {
       level--;
       if (level < 0) {
         return i;
@@ -187,31 +318,6 @@ export function findClosingBracket(str: string, b: string) {
   return -1;
 }
 
-interface LastPossibleEmStrongCloserIndex {
-  /** Last `*` run that can close emphasis or strong. `-1` if none. */
-  '*': number;
-  /** Last `_` run that can close emphasis or strong. `-1` if none. */
-  _: number;
-}
-
-/**
- * Closer hints for one inline `maskedSrc`. Held only while that pass runs.
- */
-interface EmStrongDelCloserHintFrame {
-  maskedSrc: string;
-  lastPossibleEmStrongCloserIndex: LastPossibleEmStrongCloserIndex;
-  /** Last `~` run that can close strikethrough. `-1` if none. */
-  lastPossibleDelCloserIndex: number;
-}
-
-/**
- * Hint stacks for inline passes currently running. Keyed by the tokenizer
- * instance so parses do not share frames. Nested `inlineTokens` calls push
- * a frame. The entry is removed when the outermost pass ends, so
- * `maskedSrc` is not retained once parsing returns (#4099).
- */
-const emStrongDelCloserHintStacks = new WeakMap<object, EmStrongDelCloserHintFrame[]>();
-
 /**
  * Last indexes of `*` / `_` runs that can close emphasis or strong, and of
  * a `~` run that can close strikethrough.
@@ -223,199 +329,222 @@ const emStrongDelCloserHintStacks = new WeakMap<object, EmStrongDelCloserHintFra
  * Finding one only means "keep looking": CommonMark rules 9–10 and mid-run
  * openers are still applied in the loop (#4099).
  */
-function scanLastPossibleEmStrongDelClosers(src: string): EmStrongDelCloserHintFrame {
-  const lastPossibleEmStrongCloserIndex: LastPossibleEmStrongCloserIndex = { '*': -1, _: -1 };
-  let lastPossibleDelCloserIndex = -1;
-  const len = src.length;
-  for (let i = 0; i < len; i++) {
-    const ch = src[i];
-    if (ch !== '*' && ch !== '_' && ch !== '~') {
-      continue;
-    }
-    // A leading run has no predecessor, same as one after a line break.
-    const prev = i === 0 ? '\n' : src[i - 1];
-    let j = i + 1;
-    while (j < len && src[j] === ch) {
-      j++;
-    }
-    if (prev !== ' ' && prev !== '\t' && prev !== '\n' && prev !== '\r' && prev !== '\f') {
-      if (ch === '~') {
-        lastPossibleDelCloserIndex = i;
-      } else {
-        lastPossibleEmStrongCloserIndex[ch] = i;
-      }
-    }
-    i = j - 1;
+/** @hot */
+export function scanCloserHints(src: string, hints: CloserHints): void {
+  let star = -1;
+  let underscore = -1;
+  let tilde = -1;
+  for (let i = 0; i < src.length; i++) {
+    const code = src.charCodeAt(i);
+    if (code !== 42 && code !== 95 && code !== 126) continue;
+    const start = i;
+    while (src.charCodeAt(i + 1) === code) i++;
+    if (start === 0) continue;
+    const prev = src.charCodeAt(start - 1);
+    if (prev === 32 || prev === 9 || prev === 10 || prev === 13 || prev === 12) continue;
+    if (code === 42) star = start;
+    else if (code === 95) underscore = start;
+    else tilde = start;
   }
-  return {
-    maskedSrc: src,
-    lastPossibleEmStrongCloserIndex,
-    lastPossibleDelCloserIndex,
-  };
+  hints.star = star;
+  hints.underscore = underscore;
+  hints.tilde = tilde;
 }
 
-/**
- * Scan `maskedSrc` once for the last `*` / `_` run that can close emphasis
- * or strong and the last `~` run that can close strikethrough.
- * `endEmStrongDelCloserScan` drops this frame when the inline pass ends.
- */
-export function beginEmStrongDelCloserScan(tokenizer: object, maskedSrc: string): void {
-  const frame = scanLastPossibleEmStrongDelClosers(maskedSrc);
-  const stack = emStrongDelCloserHintStacks.get(tokenizer);
-  if (stack) {
-    stack.push(frame);
-  } else {
-    emStrongDelCloserHintStacks.set(tokenizer, [frame]);
-  }
+export function lastCloser(src: string, delimiter: number): number {
+  const hints = { star: -1, underscore: -1, tilde: -1 };
+  scanCloserHints(src, hints);
+  return delimiter === 42 ? hints.star : delimiter === 95 ? hints.underscore : hints.tilde;
 }
 
-/**
- * Drop the closer-hint frame for the inline pass that just finished.
- * Removing the last frame drops the tokenizer's `maskedSrc` reference.
- */
-export function endEmStrongDelCloserScan(tokenizer: object): void {
-  const stack = emStrongDelCloserHintStacks.get(tokenizer);
-  if (!stack) {
+/** @hot */
+export function tabSegments(src: string, first: number, end: number, column: number, segments: number[]): void {
+  const tab = src.indexOf('\t', first);
+  if (tab < 0 || tab >= end) {
+    segments.push(first, end, 0);
     return;
   }
-  stack.pop();
-  if (stack.length === 0) {
-    emStrongDelCloserHintStacks.delete(tokenizer);
-  }
-}
-
-/**
- * Index in `maskedSrc` of the last `*` or `_` run that can close emphasis
- * or strong. Uses the active inline-pass scan when `maskedSrc` is that
- * pass's source; otherwise scans this string and discards the result.
- */
-export function cachedLastPossibleEmStrongCloserIndex(tokenizer: object, maskedSrc: string, delim: '*' | '_'): number {
-  const frame = emStrongDelCloserHintStacks.get(tokenizer)?.at(-1);
-  if (frame && frame.maskedSrc === maskedSrc) {
-    return frame.lastPossibleEmStrongCloserIndex[delim];
-  }
-  return scanLastPossibleEmStrongDelClosers(maskedSrc).lastPossibleEmStrongCloserIndex[delim];
-}
-
-/**
- * Index in `maskedSrc` of the last `~` run that can close strikethrough.
- * Uses the active inline-pass scan when `maskedSrc` is that pass's
- * source; otherwise scans this string and discards the result.
- */
-export function cachedLastPossibleDelCloserIndex(tokenizer: object, maskedSrc: string): number {
-  const frame = emStrongDelCloserHintStacks.get(tokenizer)?.at(-1);
-  if (frame && frame.maskedSrc === maskedSrc) {
-    return frame.lastPossibleDelCloserIndex;
-  }
-  return scanLastPossibleEmStrongDelClosers(maskedSrc).lastPossibleDelCloserIndex;
-}
-
-export function expandTabs(line: string, indent = 0) {
-  let col = indent;
-  let expanded = '';
-  for (const char of line) {
-    if (char === '\t') {
-      const added = 4 - (col % 4);
-      expanded += ' '.repeat(added);
-      col += added;
+  let span = first;
+  let padding = 0;
+  for (let i = first; i < end; i++) {
+    if (src.charCodeAt(i) === 9) {
+      segments.push(span, i, padding);
+      padding = 4 - (column & 3);
+      column += padding;
+      span = i + 1;
     } else {
-      expanded += char;
-      col++;
+      if (src.codePointAt(i)! > 0xffff) i++;
+      column++;
     }
   }
-
-  return expanded;
+  segments.push(span, end, padding);
 }
 
-/**
- * Expands the tabs in block quote markers and the indentation after them to spaces, with tab
- * stops measured from the start of the line. Inside fenced code the indentation is code content,
- * so a tab there stays literal. Lines from the first list item on are returned as is, because
- * the item's columns and the fences inside it are not tracked here.
- */
-export function expandBlockquoteTabs(lines: string[]) {
-  let fence: { marker: string, depth: number } | undefined;
-  let inListItem = false;
-  return lines.map((line) => {
-    if (inListItem) {
-      return line;
-    }
-    const { depth, expanded, keptIndent, content } = splitBlockquoteLine(line, fence?.depth ?? Infinity);
-    if (fence?.depth !== depth) {
-      fence = undefined;
-    }
-    if (fence) {
-      const close = other.blockquoteFenceClose.exec(content)?.[1];
-      if (!close || close[0] !== fence.marker[0] || close.length < fence.marker.length) {
-        return keptIndent;
+/** @hot */
+export function scanQuoteTabs(src: string, first: number, limit: number, segments: number[],
+  appendQuoteSegments: (src: string, first: number, end: number, segments: number[], followsNewline: boolean) => void): void {
+  let fenceMarker = 0;
+  let fenceLength = 0;
+  let fenceDepth = Infinity;
+  const part = { depth: 0, firstColumn: 0, rest: 0, indentWidth: 0, keptStart: 0, keptPadding: 0, contentIndent: 0 };
+  for (let start = first; start <= limit;) {
+    let end = src.indexOf('\n', start);
+    if (end === -1 || end > limit) end = limit;
+    if (start !== first) segments.push(start - 1, start, 0);
+    const before = segments.length;
+    scanQuoteIndent(src, start, end, fenceDepth, part, segments);
+    if (fenceDepth !== part.depth) fenceMarker = 0;
+    const content = quoteContentStart(src, part.rest, end, part.contentIndent);
+    let kept = false;
+    if (fenceMarker) {
+      kept = src.charCodeAt(content) !== fenceMarker || quoteFenceLength(src, content, end, true) < fenceLength;
+      if (!kept) {
+        fenceMarker = 0;
+        fenceDepth = Infinity;
       }
-      fence = undefined;
-      return expanded;
+    } else {
+      if (quoteListStarter(src, content, end)) {
+        segments.length = before;
+        appendQuoteSegments(src, start, limit, segments, start !== first);
+        return;
+      }
+      const openLength = quoteFenceLength(src, content, end, false);
+      if (openLength) {
+        fenceMarker = src.charCodeAt(content);
+        fenceLength = openLength;
+        fenceDepth = part.depth;
+      } else {
+        fenceDepth = Infinity;
+      }
     }
-    inListItem = other.blockquoteListItemStart.test(content);
-    if (inListItem) {
-      return line;
+    let rest = kept ? part.keptStart : part.rest;
+    let padding = kept ? part.keptPadding : part.indentWidth;
+    if (part.depth === 0) {
+      appendQuoteSegments(src, start, end, segments, start !== first);
+    } else {
+      if (part.depth === 1) {
+        if (padding) padding--;
+        else if (src.charCodeAt(rest) === 32) rest++;
+        else if (src.charCodeAt(rest) === 9) {
+          let column = part.firstColumn;
+          while (rest < end && (src.charCodeAt(rest) === 32 || src.charCodeAt(rest) === 9)) {
+            column += tabWidth(src.charCodeAt(rest++), column);
+          }
+          padding = column - part.firstColumn - 1;
+        }
+      }
+      let tail = rest;
+      while (tail < end) {
+        const code = src.charCodeAt(tail++);
+        if (code === 13 || code === 0x2028 || code === 0x2029) break;
+      }
+      segments.push(rest, tail, padding);
+      if (tail < end) appendQuoteSegments(src, tail, end, segments, false);
     }
-    const open = other.blockquoteFenceOpen.exec(content)?.[1];
-    if (open) {
-      fence = { marker: open, depth };
-    }
-    return expanded;
-  }).join('\n');
+    start = end + 1;
+  }
 }
 
-/**
- * Reads the `>` markers at the start of a line. `expanded` has the tabs in them and in the
- * content's first four columns of indentation expanded, `keptIndent` only the tab that the
- * optional space after the last marker cuts into, and `content` is what follows the markers.
- */
-function splitBlockquoteLine(line: string, maxDepth: number) {
-  let i = 0;
+/** @hot */
+function quoteContentStart(src: string, offset: number, end: number, indent: number): number {
+  while (offset < end && src.charCodeAt(offset) === 32 && indent <= 3) {
+    offset++;
+    indent++;
+  }
+  return indent <= 3 && offset < end ? offset : -1;
+}
+
+/** @hot */
+function quoteFenceLength(src: string, start: number, end: number, closing: boolean): number {
+  const marker = src.charCodeAt(start);
+  if (marker !== 96 && marker !== 126) return 0;
+  let offset = start + 1;
+  while (offset < end && src.charCodeAt(offset) === marker) offset++;
+  const length = offset - start;
+  if (length < 3) return 0;
+  if (closing) {
+    while (offset < end && (src.charCodeAt(offset) === 32 || src.charCodeAt(offset) === 9)) offset++;
+    return offset === end ? length : 0;
+  }
+  if (marker === 96) {
+    const next = src.indexOf('`', offset);
+    if (next >= 0 && next < end) return 0;
+  }
+  return length;
+}
+
+/** @hot */
+function quoteListStarter(src: string, start: number, end: number): boolean {
+  let offset = start;
+  let code = src.charCodeAt(offset);
+  if (code !== 42 && code !== 43 && code !== 45) {
+    while (offset < end && offset - start < 9 && code >= 48 && code <= 57) code = src.charCodeAt(++offset);
+    if (offset === start || (code !== 46 && code !== 41)) return false;
+  }
+  const next = src.charCodeAt(++offset);
+  return offset === end || next === 32 || next === 9;
+}
+
+interface BlockquoteLine {
+  depth: number;
+  firstColumn: number;
+  rest: number;
+  indentWidth: number;
+  keptStart: number;
+  keptPadding: number;
+  contentIndent: number;
+}
+
+/** @hot */
+function scanQuoteIndent(src: string, start: number, end: number, maxDepth: number, part: BlockquoteLine, segments: number[]): void {
+  let i = start;
   let col = 0;
   let depth = 0;
   let contentCol = 0;
-  let prefix = '';
 
   while (depth < maxDepth) {
     let j = i;
     let markerCol = col;
-    while (line[j] === ' ' || line[j] === '\t') {
-      markerCol += tabWidth(line[j], markerCol);
-      j++;
+    let code = src.charCodeAt(j);
+    while (j < end && (code === 32 || code === 9)) {
+      markerCol += tabWidth(code, markerCol);
+      code = src.charCodeAt(++j);
     }
-    if (line[j] !== '>' || markerCol - contentCol > 3) {
-      break;
-    }
-    prefix += ' '.repeat(markerCol - col) + '>';
+    if (j === end || code !== 62 || markerCol - contentCol > 3) break;
+    if (depth === 0) part.firstColumn = markerCol + 1;
+    else segments.push(j, j + 1, Math.max(0, markerCol - col - (depth === 1 ? 1 : 0)));
     depth++;
     i = j + 1;
     col = markerCol + 1;
-    contentCol = line[i] === ' ' || line[i] === '\t' ? col + 1 : col;
+    code = src.charCodeAt(i);
+    contentCol = code === 32 || code === 9 ? col + 1 : col;
   }
 
-  if (depth === 0) {
-    return { depth, expanded: line, keptIndent: line, content: line };
-  }
+  part.depth = depth;
+  part.keptStart = i;
+  part.keptPadding = 0;
+  part.indentWidth = 0;
+  part.contentIndent = 0;
 
-  let indent = '';
-  let keptIndent = '';
-  while ((line[i] === ' ' || line[i] === '\t') && col < contentCol + 4) {
-    const added = tabWidth(line[i], col);
-    indent += ' '.repeat(added);
-    keptIndent += col < contentCol && added > 1 ? ' '.repeat(added) : line[i];
-    col += added;
-    i++;
+  if (depth > 0) {
+    const indentStart = col;
+    let code = src.charCodeAt(i);
+    while (i < end && (code === 32 || code === 9) && col < contentCol + 4) {
+      const added = tabWidth(code, col);
+      if (col < contentCol && added > 1) {
+        part.keptPadding = added;
+        part.keptStart = i + 1;
+      }
+      col += added;
+      code = src.charCodeAt(++i);
+    }
+    part.indentWidth = col - indentStart;
+    part.contentIndent = Math.max(0, col - contentCol);
   }
-
-  const rest = line.slice(i);
-  return {
-    depth,
-    expanded: prefix + indent + rest,
-    keptIndent: prefix + keptIndent + rest,
-    content: ' '.repeat(Math.max(0, col - contentCol)) + rest,
-  };
+  part.rest = i;
 }
 
-function tabWidth(char: string, col: number) {
-  return char === '\t' ? 4 - (col % 4) : 1;
+/** @hot */
+function tabWidth(code: number, col: number): number {
+  return code === 9 ? 4 - (col % 4) : 1;
 }

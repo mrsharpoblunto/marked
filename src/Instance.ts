@@ -1,8 +1,9 @@
 import { _getDefaults } from './defaults.ts';
-import { _Lexer } from './Lexer.ts';
+import { _Lexer, configureTokenizer } from './Lexer.ts';
 import { _Parser } from './Parser.ts';
 import { _Hooks } from './Hooks.ts';
-import { _Renderer } from './Renderer.ts';
+import { configureHooks, hookSlots } from './HookDispatch.ts';
+import { _Renderer, configureRenderer } from './Renderer.ts';
 import { _Tokenizer } from './Tokenizer.ts';
 import { _TextRenderer } from './TextRenderer.ts';
 import { escapeHtmlEntities } from './helpers.ts';
@@ -47,7 +48,12 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
    */
   parseInline = this.parseMarkdown(false);
 
-  Parser = _Parser<ParserOutput, RendererOutput>;
+  Parser: {
+    new(options?: MarkedOptions<ParserOutput, RendererOutput>): _Parser<ParserOutput, RendererOutput>;
+    parse: typeof _Parser.parse;
+    parseInline: typeof _Parser.parseInline;
+  } = _Parser;
+
   Renderer = _Renderer<ParserOutput, RendererOutput>;
   TextRenderer = _TextRenderer<RendererOutput>;
   Lexer = _Lexer;
@@ -178,14 +184,14 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
       if (pack.renderer) {
         const renderer = this.defaults.renderer || new _Renderer<ParserOutput, RendererOutput>(this.defaults);
         for (const prop in pack.renderer) {
-          if (!(prop in renderer)) {
+          if (!(prop in renderer) || prop.endsWith('At')) {
             throw new Error(`renderer '${prop}' does not exist`);
           }
           if (['options', 'parser'].includes(prop)) {
             // ignore options property
             continue;
           }
-          const rendererProp = prop as Exclude<keyof _Renderer<ParserOutput, RendererOutput>, 'options' | 'parser'>;
+          const rendererProp = prop as Exclude<keyof _Renderer<ParserOutput, RendererOutput>, 'options' | 'parser' | `${string}At`>;
           const rendererFunc = pack.renderer[rendererProp] as GenericRendererFunction<RendererOutput>;
           const prevRenderer = renderer[rendererProp] as GenericRendererFunction<RendererOutput>;
           // Replace renderer with func to run extension, but fall back if false
@@ -197,19 +203,20 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
             return (ret === false ? '' : ret ?? '') as RendererOutput;
           };
         }
+        configureRenderer(renderer);
         opts.renderer = renderer;
       }
       if (pack.tokenizer) {
         const tokenizer = this.defaults.tokenizer || new _Tokenizer<ParserOutput, RendererOutput>(this.defaults);
         for (const prop in pack.tokenizer) {
-          if (!(prop in tokenizer)) {
+          if (!(prop in tokenizer) || prop.endsWith('At')) {
             throw new Error(`tokenizer '${prop}' does not exist`);
           }
           if (['options', 'rules', 'lexer'].includes(prop)) {
             // ignore options, rules, and lexer properties
             continue;
           }
-          const tokenizerProp = prop as Exclude<keyof _Tokenizer<ParserOutput, RendererOutput>, 'options' | 'rules' | 'lexer'>;
+          const tokenizerProp = prop as Exclude<keyof _Tokenizer<ParserOutput, RendererOutput>, 'options' | 'rules' | 'lexer' | `${string}At`>;
           const tokenizerFunc = pack.tokenizer[tokenizerProp] as UnknownFunction;
           const prevTokenizer = tokenizer[tokenizerProp] as UnknownFunction;
           // Replace tokenizer with func to run extension, but fall back if false
@@ -222,6 +229,7 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
             return ret;
           };
         }
+        configureTokenizer(tokenizer);
         opts.tokenizer = tokenizer;
       }
 
@@ -273,6 +281,7 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
             };
           }
         }
+        configureHooks(hooks);
         opts.hooks = hooks;
       }
 
@@ -297,6 +306,9 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
   }
 
   setOptions(opt: MarkedOptions<ParserOutput, RendererOutput>) {
+    if (opt.tokenizer) configureTokenizer(opt.tokenizer);
+    if (opt.hooks) configureHooks(opt.hooks);
+    if (opt.renderer) configureRenderer(opt.renderer);
     this.defaults = { ...this.defaults, ...opt };
     return this;
   }
@@ -342,37 +354,39 @@ export class Marked<ParserOutput = string, RendererOutput = string> {
         opt.hooks.block = blockType;
       }
 
+      const hooks = opt.hooks ? hookSlots(opt.hooks) : undefined;
+      const useKinds = !hooks && !opt.tokenizer && !opt.renderer && !opt.extensions && !opt.walkTokens;
       if (opt.async) {
         return (async() => {
-          const processedSrc = opt.hooks ? await opt.hooks.preprocess(src) : src;
-          const lexer = opt.hooks ? await opt.hooks.provideLexer(blockType) : (blockType ? _Lexer.lex : _Lexer.lexInline);
-          const tokens = await lexer(processedSrc, opt);
-          const processedTokens = opt.hooks ? await opt.hooks.processAllTokens(tokens) : tokens;
+          const processedSrc = hooks ? await hooks.preprocess(src) : src;
+          const lexer = hooks ? await hooks.provideLexer(blockType) : (blockType ? _Lexer.lex : _Lexer.lexInline);
+          const tokens = useKinds ? _Lexer.lexKnown(processedSrc, opt, blockType) : await lexer(processedSrc, opt);
+          const processedTokens = hooks ? await hooks.processAllTokens(tokens) : tokens;
           if (opt.walkTokens) {
             await Promise.all(this.walkTokens(processedTokens, opt.walkTokens));
           }
-          const parser = opt.hooks ? await opt.hooks.provideParser(blockType) : (blockType ? _Parser.parse : _Parser.parseInline);
-          const html = await parser(processedTokens, opt);
-          return opt.hooks ? await opt.hooks.postprocess(html) : html;
+          const parser = hooks ? await hooks.provideParser(blockType) : (blockType ? _Parser.parse : _Parser.parseInline);
+          const html = useKinds ? await _Parser.parseKnown(processedTokens, opt, blockType) : await parser(processedTokens, opt);
+          return hooks ? await hooks.postprocess(html) : html;
         })().catch(throwError);
       }
 
       try {
-        if (opt.hooks) {
-          src = opt.hooks.preprocess(src) as string;
+        if (hooks) {
+          src = hooks.preprocess(src) as string;
         }
-        const lexer = opt.hooks ? opt.hooks.provideLexer(blockType) : (blockType ? _Lexer.lex : _Lexer.lexInline);
-        let tokens = lexer(src, opt);
-        if (opt.hooks) {
-          tokens = opt.hooks.processAllTokens(tokens);
+        const lexer = hooks ? hooks.provideLexer(blockType) : (blockType ? _Lexer.lex : _Lexer.lexInline);
+        let tokens = useKinds ? _Lexer.lexKnown(src, opt, blockType) : lexer(src, opt);
+        if (hooks) {
+          tokens = hooks.processAllTokens(tokens);
         }
         if (opt.walkTokens) {
           this.walkTokens(tokens, opt.walkTokens);
         }
-        const parser = opt.hooks ? opt.hooks.provideParser(blockType) : (blockType ? _Parser.parse : _Parser.parseInline);
-        let html = parser(tokens, opt);
-        if (opt.hooks) {
-          html = opt.hooks.postprocess(html);
+        const parser = hooks ? hooks.provideParser(blockType) : (blockType ? _Parser.parse : _Parser.parseInline);
+        let html = useKinds ? _Parser.parseKnown(tokens, opt, blockType) : parser(tokens, opt);
+        if (hooks) {
+          html = hooks.postprocess(html);
         }
         return html;
       } catch(e) {
