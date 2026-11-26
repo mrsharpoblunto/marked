@@ -817,6 +817,34 @@ function testUserListRule(rule: RegExp, src: string, start: number, end: number)
   return rule.test(sourceText(src, start, end));
 }
 
+/** @hotIgnore User adapter: at most one source range and one replacement string per rule. */
+function replaceUserContainerRule(rule: RegExp, src: string, start: number, end: number, replacement: string): string {
+  return sourceText(src, start, end).replace(rule, replacement);
+}
+
+/** @hotIgnore User adapter: at most one source range and one match per rule. */
+function matchUserContainerRule(rule: RegExp, src: string, start: number): RegExpExecArray | null {
+  return rule.exec(sourceText(src, start, src.length));
+}
+
+/** @hotIgnore User adapter: one trimmed marker, one number substring, and one result per match. */
+function userListMarker(capture: string): { marker: number, ordered: boolean, start: number | '' } {
+  const bull = capture.trim();
+  const ordered = bull.length > 1;
+  return { marker: bull.charCodeAt(bull.length - 1), ordered, start: ordered ? +bull.slice(0, -1) : '' };
+}
+
+/** @hotIgnore User adapter: one source range and one two-line input per replaced heading rule. */
+function testUserListSetext(rule: RegExp, previous: string, src: string, start: number, end: number): boolean {
+  return rule.test(previous + '\n' + sourceText(src, start, end));
+}
+
+/** @hotIgnore User adapter: one source suffix for the mixed default and replaced block tests. */
+function testUserListStarts(rules: Rules['block'], src: string, start: number): boolean {
+  const suffix = sourceText(src, start, src.length);
+  return rules.fences.test(suffix) || rules.heading.test(suffix) || rules.hr.test(suffix);
+}
+
 /** @hot */
 function listHtmlBegins(src: string, first: number, end: number, indent: number): boolean {
   let pos = first + skipSpacesAt(src, first, indent);
@@ -1422,7 +1450,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           // lazy line is re-parsed as a spurious deeper blockquote.
           const continuation = this.rules.other.blockquoteSetextReplace2 === standardQuotePrefix
             ? stripQuoteMarkers(src, position, quoteEnd)
-            : sourceText(src, position, quoteEnd).replace(this.rules.other.blockquoteSetextReplace2, '');
+            : replaceUserContainerRule(this.rules.other.blockquoteSetextReplace2, src, position, quoteEnd, '');
           const newText = oldToken.raw + '\n' + continuation;
           this.lexer.state.inBlockquote = true;
           const newToken = this.blockquote(newText)!;
@@ -1513,22 +1541,18 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       }
 
       const listStart = offset;
-      const bull = cap?.[1].trim();
-      const marker = bull === undefined ? src.charCodeAt(offset + markerEnd - 1) : bull.charCodeAt(bull.length - 1);
-      const isordered = bull === undefined ? marker === 46 || marker === 41 : bull.length > 1;
+      const custom = cap ? userListMarker(cap[1]) : undefined;
+      const marker = custom ? custom.marker : src.charCodeAt(offset + markerEnd - 1);
+      const isordered = custom ? custom.ordered : marker === 46 || marker === 41;
 
-      let start: number | '' = '';
-      if (isordered) {
-        if (bull === undefined) {
-          let value = 0;
-          for (let i = listStart; i < listStart + markerEnd - 1; i++) {
-            const code = src.charCodeAt(i);
-            if (code !== 32) value = value * 10 + code - 48;
-          }
-          start = value;
-        } else {
-          start = +bull.slice(0, -1);
+      let start: number | '' = custom ? custom.start : '';
+      if (isordered && !custom) {
+        let value = 0;
+        for (let i = listStart; i < listStart + markerEnd - 1; i++) {
+          const code = src.charCodeAt(i);
+          if (code !== 32) value = value * 10 + code - 48;
         }
+        start = value;
       }
 
       const list: Tokens.List = createList('', isordered, start, false);
@@ -1617,7 +1641,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               const raw = sourceText(src, offset, nextEnd);
               nextLine = this.rules.other.listReplaceNesting === standardListNesting
                 ? pedanticListIndent(raw)
-                : raw.replace(this.rules.other.listReplaceNesting, '  ');
+                : replaceUserContainerRule(this.rules.other.listReplaceNesting, raw, 0, raw.length, '  ');
             }
             const nextSource = nextLine ?? src;
             const nextStart = nextLine === undefined ? offset : 0;
@@ -1666,10 +1690,10 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
                 let lastBlock = previous;
                 if (!this.options.pedantic && !hasContinuation && !previous.includes('\t')) {
                   let nested = 0;
-                  while (!(hrRegex ? hrRegex.test(sourceText(lastBlock, nested, lastBlock.length)) : listHasHr(lastBlock, nested, maxIndent))) {
+                  while (!(hrRegex ? testUserListRule(hrRegex, lastBlock, nested, lastBlock.length) : listHasHr(lastBlock, nested, maxIndent))) {
                     const after = this.rules.other.nestedBlockMarker === standardNestedMarkers
                       ? nestedMarkerEnd(lastBlock, nested, false)
-                      : nested + (this.rules.other.nestedBlockMarker.exec(sourceText(lastBlock, nested, lastBlock.length))?.[0].length ?? 0);
+                      : nested + (matchUserContainerRule(this.rules.other.nestedBlockMarker, lastBlock, nested)?.[0].length ?? 0);
                     if (after === nested) break;
                     nested = after;
                   }
@@ -1686,10 +1710,10 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
                 if (startsListInterrupt(lastBlock, maxIndent, pedantic, false)) {
                   break;
                 }
-                if (htmlBeginRegex ? htmlBeginRegex.test(lastBlock) : listHtmlBegins(lastBlock, 0, lastBlock.length, maxIndent)) {
+                if (htmlBeginRegex ? testUserListRule(htmlBeginRegex, lastBlock, 0, lastBlock.length) : listHtmlBegins(lastBlock, 0, lastBlock.length, maxIndent)) {
                   break;
                 }
-                if (hrRegex ? hrRegex.test(lastBlock) : listHasHr(lastBlock, 0, maxIndent)) {
+                if (hrRegex ? testUserListRule(hrRegex, lastBlock, 0, lastBlock.length) : listHasHr(lastBlock, 0, maxIndent)) {
                   break;
                 }
                 if (!this.options.pedantic && !lineIsLazy) {
@@ -1705,7 +1729,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
                       nested = after;
                     }
                   } else {
-                    content = previous.replace(this.rules.other.nestedContainerMarkers, '');
+                    content = replaceUserContainerRule(this.rules.other.nestedContainerMarkers, previous, 0, previous.length, '');
                   }
                   const standardStarts = this.rules.block.fences === standardFenceRule
                   && this.rules.block.heading === standardHeadingRule && this.rules.block.hr === standardHrRule;
@@ -1713,8 +1737,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
                     const heading = nested + skipSpacesAt(content, nested, 3);
                     if (lineHasFence(content, nested) || headingMarkerEnd(content, heading, false) !== heading || listHasHr(content, nested, 3)) break;
                   } else {
-                    const suffix = sourceText(content, nested, content.length);
-                    if (this.rules.block.fences.test(suffix) || this.rules.block.heading.test(suffix) || this.rules.block.hr.test(suffix)) break;
+                    if (testUserListStarts(this.rules.block, content, nested)) break;
                   }
                 }
 
@@ -1724,7 +1747,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
                 && setextUnderlineStart(src, offset, true) >= 0
                 && (this.rules.block.lheading === standardSetextRule || this.rules.block.lheading === gfmSetextRule
                   ? setextTextEnd(`${previous}\n${sourceText(src, offset, nextEnd)}`, 0, this.rules.block.lheading === gfmSetextRule, false) >= 0
-                  : this.rules.block.lheading.test(`${previous}\n${sourceText(src, offset, nextEnd)}`));
+                  : testUserListSetext(this.rules.block.lheading, previous, src, offset, nextEnd));
                 if (pedantic) {
                   itemContents += '\n' + nextLine;
                 } else {
@@ -1771,7 +1794,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
             const end = taskPrefixEnd(itemContents);
             task = end !== 0 && end < itemContents.length && !isStringWhitespace(itemContents.charCodeAt(end));
           } else {
-            task = this.rules.other.listIsTask.test(itemContents);
+            task = testUserListRule(this.rules.other.listIsTask, itemContents, 0, itemContents.length);
           }
         }
         list.items.push(createListItem(raw, task, false, itemContents));
@@ -1813,21 +1836,21 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           // Remove checkbox markdown from item tokens
           const rule = this.rules.other.listReplaceTask;
           const standardTask = rule === standardReplaceTask;
-          item.text = standardTask ? stripTaskPrefix(item.text) : item.text.replace(rule, '');
-          itemToken.raw = standardTask ? stripTaskPrefix(itemToken.raw) : itemToken.raw.replace(rule, '');
-          itemToken.text = standardTask ? stripTaskPrefix(itemToken.text) : itemToken.text.replace(rule, '');
+          item.text = standardTask ? stripTaskPrefix(item.text) : replaceUserContainerRule(rule, item.text, 0, item.text.length, '');
+          itemToken.raw = standardTask ? stripTaskPrefix(itemToken.raw) : replaceUserContainerRule(rule, itemToken.raw, 0, itemToken.raw.length, '');
+          itemToken.text = standardTask ? stripTaskPrefix(itemToken.text) : replaceUserContainerRule(rule, itemToken.text, 0, itemToken.text.length, '');
           // The first token queued its text first, so its entry is found right away
           const inlineQueue = this.lexer.inlineQueue;
           for (let j = queueStarts[i]; j < inlineQueue.length; j++) {
             if (inlineQueue[j].tokens === itemToken.tokens) {
               const entry = inlineQueue[j];
-              entry.src = standardTask ? stripTaskPrefix(entry.src) : entry.src.replace(rule, '');
+              entry.src = standardTask ? stripTaskPrefix(entry.src) : replaceUserContainerRule(rule, entry.src, 0, entry.src.length, '');
               break;
             }
           }
 
           const taskRule = this.rules.other.listTaskCheckbox;
-          const taskRaw = taskRule === standardTaskCheckbox ? firstTaskMarker(item.raw) : taskRule.exec(item.raw)?.[0];
+          const taskRaw = taskRule === standardTaskCheckbox ? firstTaskMarker(item.raw) : matchUserContainerRule(taskRule, item.raw, 0)?.[0];
           if (taskRaw !== undefined) {
             const checkboxToken: Tokens.Checkbox = createCheckbox(taskRaw + ' ', taskRaw.charCodeAt(1) !== 32);
             item.checked = checkboxToken.checked;
