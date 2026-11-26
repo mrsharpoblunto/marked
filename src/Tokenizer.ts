@@ -11,7 +11,7 @@ import {
   cachedLastPossibleEmStrongCloserIndex,
   cachedLastPossibleDelCloserIndex,
 } from './helpers.ts';
-import type { Rules } from './rules.ts';
+import { inline, type Rules } from './rules.ts';
 import type { _Lexer } from './Lexer.ts';
 import type { Links, Tokens, Token } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
@@ -167,7 +167,6 @@ function isLabelEndInsideToken(src: string, label: string, labelStart: number, r
   return false;
 }
 
-/** @hot */
 function listMarkerEnd(src: string, marker: number, ordered: boolean, pedantic: boolean): number {
   let end = 0;
   while (end < 3 && src.charCodeAt(end) === 32) end++;
@@ -189,10 +188,36 @@ function listMarkerEnd(src: string, marker: number, ordered: boolean, pedantic: 
   return end === src.length || next === 9 || next === 10 || next === 32 ? end : 0;
 }
 
-/** @hot */
 function lineEnd(src: string, start: number): number {
   const end = src.indexOf('\n', start);
   return end === -1 ? src.length : end;
+}
+
+/** @hot */
+function commonMarkTextEnd(src: string): number {
+  if (src.length === 0) return 0;
+
+  let end = 1;
+  if (src.charCodeAt(0) === 96) {
+    while (src.charCodeAt(end) === 96) end++;
+  }
+
+  while (end < src.length) {
+    const code = src.charCodeAt(end);
+    if (code === 92 || code === 60 || code === 33 || code === 91
+      || code === 96 || code === 42 || code === 95) {
+      break;
+    }
+    if (code === 32 && src.charCodeAt(end + 1) === 32) {
+      let next = end + 2;
+      while (src.charCodeAt(next) === 32) next++;
+      if (src.charCodeAt(next) === 10) break;
+      end = next;
+    } else {
+      end++;
+    }
+  }
+  return end;
 }
 
 /**
@@ -1366,15 +1391,21 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
   /** @hot */
   inlineText(src: string): Tokens.Text | undefined {
-    const cap = this.rules.inline.text.exec(src);
-    if (cap) {
+    const rule = this.rules.inline.text;
+    let raw: string | undefined;
+    if (rule === inline.normal.text) {
+      const end = commonMarkTextEnd(src);
+      if (end === 0) return;
+      raw = end === src.length ? src : src.slice(0, end);
+    } else {
+      raw = rule.exec(src)?.[0];
+    }
+    if (raw !== undefined) {
       const escaped = this.lexer.state.inRawBlock;
       return {
         type: 'text',
-        raw: cap[0],
-        // raw HTML keeps whatever it was written with, everywhere else a numeric
-        // character reference stands for the character itself
-        text: escaped ? cap[0] : decodeNumericCharacterReferences(cap[0]),
+        raw,
+        text: escaped ? raw : decodeNumericCharacterReferences(raw),
         escaped,
       };
     }
