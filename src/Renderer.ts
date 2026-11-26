@@ -530,6 +530,7 @@ export function configureRenderer<P, R>(renderer: _Renderer<P, R>): void {
   configuredRenderers.set(renderer, createRendererSlots(renderer));
 }
 
+/** @hotIgnore User adapter: one slot object and one wrapper and descriptor per replaced method, plus a wrapper and descriptor for a replaced table row. */
 export function rendererSlots<P, R>(renderer: _Renderer<P, R>): _Renderer<P, R> {
   return configuredRenderers.get(renderer) as _Renderer<P, R> | undefined ?? createRendererSlots(renderer);
 }

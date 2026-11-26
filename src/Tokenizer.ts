@@ -1,5 +1,5 @@
 import { TokenKind } from './tokenKind.ts';
-import { createBlockquote, createBr, createCheckbox, createCode, createCodespan, createDef, createDel, createEm, createEscape, createHeading, createHr, createHtml, createImage, createLink, createList, createListItem, createParagraph, createSpace, createStrong, createTable, createTableCell, createText } from './tokenFactories.ts';
+import { createBlockquote, createBr, createCheckbox, createCode, createCodespan, createDef, createDel, createEm, createEscape, createHeading, createHr, createHtml, createImage, createLink, createList, createListItem, createParagraph, createSpace, createStrong, createTable, createTableCell, createText, LinkPrefix } from './tokenFactories.ts';
 import { _defaults } from './defaults.ts';
 import {
   withoutTrailingNewlines,
@@ -37,6 +37,7 @@ function countCodePoints(text: string) {
  * spans untouched: their content is literal, so a `\[` or `\]` inside a
  * code span is not an escape.
  */
+/** @hot */
 function unescapeLinkLabel(label: string, rules: Rules): string {
   if (label.indexOf('\\') === -1) return label;
   let start = 0;
@@ -86,9 +87,10 @@ function outputLink(cap: string[], href: string, linkTitle: string | null | unde
     lexer.state.linkEmitted = true;
   }
 
-  return isImage ? createImage(raw, href, title, text, tokens) : createLink(raw, href, title, text, tokens, false);
+  return isImage ? createImage(raw, href, title, text, tokens) : createLink(raw, href, title, text, tokens, LinkPrefix.None);
 }
 
+/** @hot */
 function indentCodeCompensation(raw: string, text: string, canExpandTabs: boolean): string {
   const indent = skipSpaces(raw, 3);
   const marker = raw.charCodeAt(indent);
@@ -439,7 +441,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       let text = indentCodeCompensation(raw, cap[3] || '', this.lexer.state.top && !this.lexer.state.inBlockquote);
       // The fence pattern consumes the final content newline outside the capture.
       // Keep it when the captured content ends in a blank line.
-      if (cap[3] !== undefined && (text === '' || text.endsWith('\n'))) {
+      if (cap[3] !== undefined && (text.length === 0 || text.charCodeAt(text.length - 1) === 10)) {
         text += '\n';
       }
 
@@ -498,6 +500,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  /** @hot */
   blockquote(src: string): Tokens.Blockquote | undefined {
     return this.blockquoteAt(src, 0);
   }
@@ -651,6 +654,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  /** @hot */
   list(src: string): Tokens.List | undefined {
     return this.listAt(src, 0);
   }
@@ -687,7 +691,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         }
       }
 
-      const list: Tokens.List = createList('', isordered, start, false, []);
+      const list: Tokens.List = createList('', isordered, start, false);
 
       let previousBlankLine = false;
       // Check if current bullet point can start a new List Item
@@ -849,7 +853,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           }
         }
 
-        list.items.push(createListItem(raw, !!this.options.gfm && this.rules.other.listIsTask.test(itemContents), false, itemContents, []));
+        list.items.push(createListItem(raw, !!this.options.gfm && this.rules.other.listIsTask.test(itemContents), false, itemContents));
       }
 
       // Do not consume trailing whitespace from the final item.
@@ -1009,7 +1013,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     headers ??= splitCells(cap[1], 0, cap[1].length, 0);
     aligns ??= tableAlignments(cap[2]);
 
-    const item: Tokens.Table = createTable(withoutTrailingNewlines(cap[0]), [], aligns, []);
+    const item: Tokens.Table = createTable(withoutTrailingNewlines(cap[0]), aligns);
 
     if (headers.length !== aligns.length) {
       // header and align columns must be equal, rows can be different.
@@ -1052,7 +1056,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (cap) {
       const start = trimStartOffset(cap[1], 0, cap[1].length);
       const text = sourceText(cap[1], start, trimEndOffset(cap[1], start, cap[1].length));
-      return createHeading(withoutTrailingNewlines(cap[0]), cap[2].charAt(0) === '=' ? 1 : 2, text, this.lexer.inline(text));
+      return createHeading(withoutTrailingNewlines(cap[0]), cap[2].charCodeAt(0) === 61 ? 1 : 2, text, this.lexer.inline(text));
     }
   }
 
@@ -1311,7 +1315,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       // An emStrongMask hook can return a string with a different length.
       const scanStart = Math.max(0, emStrongCloserWindowStart);
       const lastCloser = lastPossibleEmStrongCloserIndex - emStrongCloserWindowStart + scanStart;
-      const endReg = startCloserScan(closerRule, maskedSrc, scanStart);
+      const endReg = startCloserScan(closerRule, maskedSrc, scanStart, delimChar === '*' ? this.rules.cursor?.inline.star : this.rules.cursor?.inline.underscore);
 
       while ((match = endReg.exec(maskedSrc)) !== null) {
         if (match.index > lastCloser) break;
@@ -1431,7 +1435,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       // An emStrongMask hook can return a string with a different length.
       const scanStart = Math.max(0, delCloserWindowStart);
       const lastCloser = lastPossibleDelCloserIndex - delCloserWindowStart + scanStart;
-      const endReg = startCloserScan(closerRule, maskedSrc, scanStart);
+      const endReg = startCloserScan(closerRule, maskedSrc, scanStart, this.rules.cursor?.inline.tilde);
 
       while ((match = endReg.exec(maskedSrc)) !== null) {
         if (match.index > lastCloser) break;
@@ -1476,18 +1480,8 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (src.charCodeAt(offset) !== 60) return; // <
     const cap = execAt(this.rules.inline.autolink, src, offset, this.rules.cursor?.inline.autolink);
     if (cap) {
-      let text, href;
-      if (cap[2] === '@') {
-        text = cap[1];
-        href = 'mailto:' + text;
-      } else {
-        text = cap[1];
-        href = text;
-      }
-
-      return createLink(cap[0], href, null, text, [
-        createText(text, text, undefined),
-      ], true);
+      const prefix = cap[2]?.charCodeAt(0) === 64 ? LinkPrefix.Email : LinkPrefix.None;
+      return createLink(cap[0], cap[1], null, cap[1], undefined, prefix);
     }
   }
 
@@ -1500,27 +1494,19 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   urlAt(src: string, offset: number): Tokens.Link | undefined {
     let cap;
     if (cap = execAt(this.rules.inline.url, src, offset, this.rules.cursor?.inline.url)) {
-      let text, href;
-      if (cap[2] === '@') {
-        text = cap[0];
-        href = 'mailto:' + text;
+      let prefix: number = LinkPrefix.None;
+      if (cap[2]?.charCodeAt(0) === 64) {
+        prefix = LinkPrefix.Email;
       } else {
-        // do extended autolink path validation
-        let prevCapZero;
+        // The URL rule matches a prefix. Remove invalid trailing characters.
+        let previousLength;
         do {
-          prevCapZero = cap[0];
+          previousLength = cap[0].length;
           cap[0] = this.rules.inline._backpedal.exec(cap[0])?.[0] ?? '';
-        } while (prevCapZero !== cap[0]);
-        text = cap[0];
-        if (cap[1] === 'www.') {
-          href = 'http://' + cap[0];
-        } else {
-          href = cap[0];
-        }
+        } while (previousLength !== cap[0].length);
+        if (cap[1]?.charCodeAt(3) === 46) prefix = LinkPrefix.Http;
       }
-      return createLink(cap[0], href, null, text, [
-        createText(text, text, undefined),
-      ], true);
+      return createLink(cap[0], cap[0], null, cap[0], undefined, prefix);
     }
   }
 

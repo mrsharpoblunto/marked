@@ -21,14 +21,14 @@ export function createBlockquote(raw: Tokens.Blockquote['raw'], text: Tokens.Blo
   return { type: 'blockquote', raw, tokens, text, kind: TokenKind.Blockquote };
 }
 
-/** @hotIgnore Output: one list token per call. */
-export function createList(raw: Tokens.List['raw'], ordered: Tokens.List['ordered'], start: Tokens.List['start'], loose: Tokens.List['loose'], items: Tokens.List['items']): Tokens.List {
-  return { type: 'list', raw, ordered, start, loose, items, kind: TokenKind.List };
+/** @hotIgnore Output: one list token and one item array per call. */
+export function createList(raw: Tokens.List['raw'], ordered: Tokens.List['ordered'], start: Tokens.List['start'], loose: Tokens.List['loose']): Tokens.List {
+  return { type: 'list', raw, ordered, start, loose, items: [], kind: TokenKind.List };
 }
 
-/** @hotIgnore Output: one list item token per call. */
-export function createListItem(raw: Tokens.ListItem['raw'], task: Tokens.ListItem['task'], loose: Tokens.ListItem['loose'], text: Tokens.ListItem['text'], tokens: Tokens.ListItem['tokens']): Tokens.ListItem {
-  return { type: 'list_item', raw, task, loose, text, tokens, kind: TokenKind.ListItem };
+/** @hotIgnore Output: one list item token and one child array per call. */
+export function createListItem(raw: Tokens.ListItem['raw'], task: Tokens.ListItem['task'], loose: Tokens.ListItem['loose'], text: Tokens.ListItem['text']): Tokens.ListItem {
+  return { type: 'list_item', raw, task, loose, text, tokens: [], kind: TokenKind.ListItem };
 }
 
 /** @hotIgnore Output: one checkbox token per call. */
@@ -46,9 +46,9 @@ export function createDef(tag: Tokens.Def['tag'], raw: Tokens.Def['raw'], href: 
   return { type: 'def', tag, raw, href, title, kind: TokenKind.Def };
 }
 
-/** @hotIgnore Output: one table token per call. */
-export function createTable(raw: Tokens.Table['raw'], header: Tokens.Table['header'], align: Tokens.Table['align'], rows: Tokens.Table['rows']): Tokens.Table {
-  return { type: 'table', raw, header, align, rows, kind: TokenKind.Table };
+/** @hotIgnore Output: one table token and two arrays per call. */
+export function createTable(raw: Tokens.Table['raw'], align: Tokens.Table['align']): Tokens.Table {
+  return { type: 'table', raw, header: [], align, rows: [], kind: TokenKind.Table };
 }
 
 /** @hotIgnore Output: one escape token per call. */
@@ -107,9 +107,15 @@ export function createText(raw: string, text: string, detail: Token[] | boolean 
   return { type: 'text', raw, text, kind: TokenKind.Text };
 }
 
-/** @hotIgnore Output: one link token per call. */
-export function createLink(raw: string, href: string, title: string | null, text: string, tokens: Token[], autolink: boolean): Tokens.Link {
-  if (autolink) return { type: 'link', raw, text, href, autolink: true, tokens, kind: TokenKind.Link };
+export const LinkPrefix = { None: 0, Email: 1, Http: 2 } as const;
+
+/** @hotIgnore Output: one link token. An autolink adds one text token, one child array, and at most one URL string. */
+export function createLink(raw: string, href: string, title: string | null, text: string, tokens: Token[] | undefined, prefix: number): Tokens.Link {
+  if (!tokens) {
+    if (prefix === LinkPrefix.Email) href = 'mailto:' + href;
+    if (prefix === LinkPrefix.Http) href = 'http://' + href;
+    return { type: 'link', raw, text, href, autolink: true, tokens: [createText(text, text, undefined)], kind: TokenKind.Link };
+  }
   return { type: 'link', raw, href, title, text, tokens, kind: TokenKind.Link };
 }
 

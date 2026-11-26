@@ -162,8 +162,9 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   renderText(tokens: Token[], output: OutputBuffer): void {
-    const renderer = this.#textSlots ??= textRendererSlots(this.textRenderer);
+    const renderer = this.#textSlots ??= this.#useKinds ? this.textRenderer : textRendererSlots(this.textRenderer);
     if (renderer !== this.textRenderer || this.options.extensions?.renderers) {
       this.renderInlines(imageTextTokens(tokens), output, renderer);
       return;

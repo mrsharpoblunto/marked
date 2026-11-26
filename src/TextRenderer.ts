@@ -184,6 +184,7 @@ export class _TextRenderer<RendererOutput = string> {
 const textMethods = ['strong', 'em', 'codespan', 'del', 'html', 'text', 'link', 'image', 'br', 'checkbox'] as const;
 
 // The checker cannot follow slots that call user renderers.
+/** @hotIgnore User adapter: one slot object and one wrapper and descriptor per replaced method. */
 export function textRendererSlots<R>(renderer: _TextRenderer<R>): _TextRenderer<R> {
   let slots = renderer;
   for (const name of textMethods) {

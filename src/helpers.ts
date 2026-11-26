@@ -59,11 +59,42 @@ const preparedBlock = {
   pedantic: prepareRules(blockKeys, block.pedantic),
 };
 
+interface CloserRule {
+  original: RegExp;
+  initial: RegExp;
+  next: RegExp;
+}
+
+const preparedClosers = new WeakMap<RegExp, CloserRule>();
+
+function prepareCloser(original: RegExp): CloserRule {
+  let scan = preparedClosers.get(original);
+  if (!scan) {
+    const separator = original.source.indexOf('|');
+    scan = {
+      original,
+      initial: new RegExp(original.source.slice(1, separator), 'uy'),
+      next: new RegExp(original.source.slice(separator + 1), 'gu'),
+    };
+    preparedClosers.set(original, scan);
+  }
+  return scan;
+}
+
+function prepareInline(rules: typeof inline.normal) {
+  return {
+    ...prepareRules(inlineKeys, rules),
+    star: prepareCloser(rules.emStrongRDelimAst),
+    underscore: prepareCloser(rules.emStrongRDelimUnd),
+    tilde: rules.delRDelim === noopTest ? undefined : prepareCloser(rules.delRDelim),
+  };
+}
+
 const preparedInline = {
-  normal: prepareRules(inlineKeys, inline.normal),
-  gfm: prepareRules(inlineKeys, inline.gfm),
-  breaks: prepareRules(inlineKeys, inline.breaks),
-  pedantic: prepareRules(inlineKeys, inline.pedantic),
+  normal: prepareInline(inline.normal),
+  gfm: prepareInline(inline.gfm),
+  breaks: prepareInline(inline.breaks),
+  pedantic: prepareInline(inline.pedantic),
 };
 
 const preparedOther = {
@@ -102,19 +133,15 @@ export function execAt(rule: RegExp, src: string, offset: number, prepared: Curs
   return sticky.exec(src);
 }
 
-const closerRules = new WeakMap<RegExp, { initial: RegExp, next: RegExp }>();
+/** @hotIgnore User adapter: at most two RegExp instances and one record per custom closer rule. */
+function prepareUserCloser(rule: RegExp): CloserRule {
+  return prepareCloser(rule);
+}
 
 /** Start a delimiter scan at the cursor. The first alternative can only match at the start. */
-export function startCloserScan(rule: RegExp, src: string, start: number): RegExp {
-  let scan = closerRules.get(rule);
-  if (!scan) {
-    const separator = rule.source.indexOf('|');
-    scan = {
-      initial: new RegExp(rule.source.slice(1, separator), 'uy'),
-      next: new RegExp(rule.source.slice(separator + 1), 'gu'),
-    };
-    closerRules.set(rule, scan);
-  }
+/** @hot */
+export function startCloserScan(rule: RegExp, src: string, start: number, prepared: CloserRule | undefined): RegExp {
+  const scan = prepared?.original === rule ? prepared : prepareUserCloser(rule);
   scan.initial.lastIndex = start;
   const initial = scan.initial.exec(src);
   scan.next.lastIndex = initial ? scan.initial.lastIndex : start;
