@@ -287,26 +287,26 @@ export function trimTrailingBlankLines(str: string) {
  * through upper case does, as in commonmark.js; the final `toLowerCase()`
  * keeps the folded label lower case, the form `def.tag` has always used.
  */
-export function normalizeLabel(label: string): string {
-  const start = trimStartOffset(label, 0, label.length);
-  const end = trimEndOffset(label, start, label.length);
-  let needsRewrite = false;
+export function normalizeLabel(label: string, first: number, last: number): string {
+  const start = trimStartOffset(label, first, last);
+  const end = trimEndOffset(label, start, last);
+  let firstChange = end;
   for (let i = start; i < end; i++) {
     const code = label.charCodeAt(i);
     if (code > 127) {
       const text = sourceText(label, start, end);
       return text.replace(other.multipleSpaceGlobal, ' ').toLowerCase().toUpperCase().toLowerCase();
     }
-    if ((code >= 65 && code <= 90) || (code >= 9 && code <= 13)
-      || (code === 32 && label.charCodeAt(i - 1) === 32)) {
-      needsRewrite = true;
+    if (firstChange === end && ((code >= 65 && code <= 90) || (code >= 9 && code <= 13)
+      || (code === 32 && isStringWhitespace(label.charCodeAt(i + 1))))) {
+      firstChange = i;
     }
   }
 
-  if (!needsRewrite) return sourceText(label, start, end);
+  if (firstChange === end) return sourceText(label, start, end);
   let result = '';
   let span = start;
-  for (let i = start; i < end; i++) {
+  for (let i = firstChange; i < end; i++) {
     const code = label.charCodeAt(i);
     if (code >= 65 && code <= 90) {
       result += label.slice(span, i);

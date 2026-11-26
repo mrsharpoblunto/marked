@@ -1049,7 +1049,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         return;
       }
 
-      const tag = normalizeLabel(cap[1]);
+      const tag = normalizeLabel(cap[1], 0, cap[1].length);
       const href = cap[2] ? cap[2].replace(this.rules.other.hrefBrackets, '$1').replace(this.rules.inline.anyPunctuation, '$1') : '';
       const title = cap[3] ? cap[3].substring(1, cap[3].length - 1).replace(this.rules.inline.anyPunctuation, '$1') : cap[3];
       return createDef(tag, withoutTrailingNewlines(cap[0]), href, title);
@@ -1320,7 +1320,8 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         return;
       }
 
-      const link = links[normalizeLabel(cap[2] || cap[1])];
+      const label = cap[2] || cap[1];
+      const link = links[normalizeLabel(label, 0, label.length)];
       if (!link) {
         const text = cap[0].charAt(0);
         return createText(text, text, undefined);
