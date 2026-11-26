@@ -1,5 +1,10 @@
 import { TokenKind } from './tokenKind.ts';
-import { createBlockquote, createBr, createCheckbox, createCode, createCodespan, createDef, createDel, createEm, createEscape, createHeading, createHr, createHtml, createImage, createLink, createList, createListItem, createParagraph, createSpace, createStrong, createTable, createTableCell, createText, LinkPrefix } from './tokenFactories.ts';
+import {
+  createBlockquote, createBr, createCheckbox, createCode, createCodespan,
+  createDef, createDel, createEm, createEscape, createHeading, createHr,
+  createHtml, createImage, createLink, createList, createListItem, createParagraph,
+  createSpace, createStrong, createTable, createTableCell, createText, LinkPrefix,
+} from './tokenFactories.ts';
 import { _defaults } from './defaults.ts';
 import {
   withoutTrailingNewlines,
@@ -986,6 +991,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   }
 
   /** @internal */
+  /** @hot */
   tableAt(src: string, offset: number): Tokens.Table | undefined {
     let headers: string[] | undefined;
     let aligns: Tokens.Table['align'] | undefined;

@@ -135,6 +135,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
 
   #slots: _Tokenizer<ParserOutput, RendererOutput>;
   #replaced = 0;
+  #hasLinks = false;
+  #reuseQueue = false;
   #defaultKinds: boolean;
   #closers = { star: -1, underscore: -1, tilde: -1 };
   #maskHook: ((src: string) => string) | undefined;
@@ -197,7 +199,11 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   /** @internal */
   clearDefault(): void {
     this.tokens.length = 0;
-    this.tokens.links = Object.create(null);
+    if (this.#hasLinks) {
+      this.tokens.links = Object.create(null);
+      this.#hasLinks = false;
+    }
+    this.#reuseQueue = true;
     this.inlineQueue.length = 0;
     this.state.inLink = false;
     this.state.inRawBlock = false;
@@ -253,7 +259,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
       this.state.inRawBlock = false;
       this.inlineTokens(next.src, next.tokens);
     }
-    this.inlineQueue = [];
+    if (this.#reuseQueue) this.inlineQueue.length = 0;
+    else this.inlineQueue = [];
 
     return this.tokens;
   }
@@ -408,6 +415,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         } else {
           // The first definition of a label wins, but a later one still consumes its text
           if (!this.tokens.links[token.tag]) {
+            this.#hasLinks = true;
             this.tokens.links[token.tag] = {
               href: token.href,
               title: token.title,

@@ -163,6 +163,7 @@ function getEscapeReplacement(ch: string): string {
   }
 }
 
+/** @hot */
 export function escapeHtmlEntities(html: string, encode?: boolean) {
   if (encode) {
     if (other.escapeTest.test(html)) {
@@ -182,6 +183,7 @@ export function escapeHtmlEntities(html: string, encode?: boolean) {
  * character they name. Values that are zero, out of range, or a surrogate become the
  * replacement character.
  */
+/** @hot */
 export function decodeNumericCharacterReferences(text: string) {
   if (!other.numericCharacterReference.test(text)) {
     return text;
@@ -208,6 +210,7 @@ export function cleanUrl(href: string) {
   return href;
 }
 
+/** @hot */
 export function splitCells(tableRow: string, rowStart: number, rowEnd: number, count: number): string[] {
   const cells: string[] = [];
   let start = rowStart;
@@ -271,12 +274,42 @@ export function trimTrailingBlankLines(str: string) {
  * through upper case does, as in commonmark.js; the final `toLowerCase()`
  * keeps the folded label lower case, the form `def.tag` has always used.
  */
-export function normalizeLabel(label: string) {
-  // The spec also asks for leading and trailing spaces, tabs and line endings
-  // to be stripped, and for internal runs of them to collapse to one space.
-  // Doing it here keeps every call site in agreement: the definition and the
-  // reference have to normalize to the same key.
-  return label.trim().replace(other.multipleSpaceGlobal, ' ').toLowerCase().toUpperCase().toLowerCase();
+export function normalizeLabel(label: string): string {
+  const start = trimStartOffset(label, 0, label.length);
+  const end = trimEndOffset(label, start, label.length);
+  let needsRewrite = false;
+  for (let i = start; i < end; i++) {
+    const code = label.charCodeAt(i);
+    if (code > 127) {
+      const text = sourceText(label, start, end);
+      return text.replace(other.multipleSpaceGlobal, ' ').toLowerCase().toUpperCase().toLowerCase();
+    }
+    if ((code >= 65 && code <= 90) || (code >= 9 && code <= 13)
+      || (code === 32 && label.charCodeAt(i - 1) === 32)) {
+      needsRewrite = true;
+    }
+  }
+
+  if (!needsRewrite) return sourceText(label, start, end);
+  let result = '';
+  let span = start;
+  for (let i = start; i < end; i++) {
+    const code = label.charCodeAt(i);
+    if (code >= 65 && code <= 90) {
+      result += label.slice(span, i);
+      result += String.fromCharCode(code + 32);
+      span = i + 1;
+    } else if (isStringWhitespace(code)) {
+      const next = trimStartOffset(label, i + 1, end);
+      if (code !== 32 || next !== i + 1) {
+        result += label.slice(span, i);
+        result += ' ';
+        span = next;
+      }
+      i = next - 1;
+    }
+  }
+  return result + label.slice(span, end);
 }
 
 /** @hot */
@@ -363,6 +396,7 @@ export function lastCloser(src: string, delimiter: number): number {
 
 const tabPadding = ['', ' ', '  ', '   ', '    '];
 
+/** @hot */
 export function expandTabs(line: string, indent = 0): string {
   let start = 0;
   let tab = line.indexOf('\t');
