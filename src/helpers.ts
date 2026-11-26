@@ -1,5 +1,25 @@
 import { other } from './rules.ts';
 
+/** @hotIgnore Output: at most one string for each token field. */
+export function sourceText(src: string, start: number, end: number): string {
+  return start === 0 && end === src.length ? src : src.slice(start, end);
+}
+
+const cursorRules = new WeakMap<RegExp, RegExp>();
+
+export function execAt(rule: RegExp, src: string, offset: number): RegExpExecArray | null {
+  if (typeof rule.source !== 'string') return rule.exec(src);
+  let sticky = cursorRules.get(rule);
+  if (!sticky) {
+    // Remove start anchors while preserving escaped characters and classes.
+    const pattern = rule.source.replace(/\\.|\[(?:\\.|[^\]\\])*\]|\^/g, part => part === '^' ? '' : part);
+    sticky = new RegExp(pattern, rule.flags.replace(/[gy]/g, '') + 'y');
+    cursorRules.set(rule, sticky);
+  }
+  sticky.lastIndex = offset;
+  return sticky.exec(src);
+}
+
 /**
  * Helpers
  */
