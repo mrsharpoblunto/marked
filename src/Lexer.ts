@@ -191,12 +191,43 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         continue;
       }
 
-      if ((token = this.tokenizer.fences(src))
-        || (token = this.tokenizer.heading(src))
-        || (token = this.tokenizer.hr(src))
-        || (token = this.tokenizer.blockquote(src))
-        || (token = this.tokenizer.list(src))
-        || (token = this.tokenizer.html(src))) {
+      // fences
+      if (token = this.tokenizer.fences(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+
+      // heading
+      if (token = this.tokenizer.heading(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+
+      // hr
+      if (token = this.tokenizer.hr(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+
+      // blockquote
+      if (token = this.tokenizer.blockquote(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+
+      // list
+      if (token = this.tokenizer.list(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+
+      // html
+      if (token = this.tokenizer.html(src)) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
@@ -223,7 +254,15 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         continue;
       }
 
-      if ((token = this.tokenizer.table(src)) || (token = this.tokenizer.lheading(src))) {
+      // table (gfm)
+      if (token = this.tokenizer.table(src)) {
+        src = src.substring(token.raw.length);
+        tokens.push(token);
+        continue;
+      }
+
+      // lheading
+      if (token = this.tokenizer.lheading(src)) {
         src = src.substring(token.raw.length);
         tokens.push(token);
         continue;
