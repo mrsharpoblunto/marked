@@ -16,11 +16,7 @@ import type { _Lexer } from './Lexer.ts';
 import type { Links, Tokens, Token } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
 
-/**
- * Remove the bracket escapes that the label match consumed, but leave code
- * spans untouched: their content is literal, so a `\[` or `\]` inside a
- * code span is not an escape.
- */
+/** @hot */
 function countCodePoints(text: string) {
   let count = 0;
   for (let i = 0; i < text.length; i++, count++) {
@@ -29,6 +25,12 @@ function countCodePoints(text: string) {
   return count;
 }
 
+/**
+ * Remove the bracket escapes that the label match consumed, but leave code
+ * spans untouched: their content is literal, so a `\[` or `\]` inside a
+ * code span is not an escape.
+ */
+/** @hotIgnore Scans the label and builds the unescaped text. */
 function unescapeLinkLabel(label: string, rules: Rules): string {
   let result = '';
   for (let i = 0; i < label.length; i++) {
@@ -50,6 +52,7 @@ function unescapeLinkLabel(label: string, rules: Rules): string {
   return result;
 }
 
+/** @hot */
 function outputLink(cap: string[], link: Pick<Tokens.Link, 'href' | 'title'>, raw: string, lexer: _Lexer, rules: Rules): Tokens.Link | Tokens.Image | undefined {
   const href = link.href;
   const title = link.title || null;
@@ -128,6 +131,7 @@ function indentCodeCompensation(raw: string, text: string, rules: Rules, canExpa
     .join('\n');
 }
 
+/** @hotIgnore Scans the label for inline syntax to find the token boundary. */
 function isLabelEndInsideToken(src: string, label: string, labelStart: number, rules: Rules) {
   if (!label.includes('<')) {
     return false;
@@ -888,6 +892,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  /** @hot */
   escape(src: string): Tokens.Escape | undefined {
     if (src.charCodeAt(0) !== 92) return; // \\
     const cap = this.rules.inline.escape.exec(src);
@@ -900,6 +905,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  /** @hot */
   tag(src: string): Tokens.Tag | undefined {
     if (src.charCodeAt(0) !== 60) return; // <
     const cap = this.rules.inline.tag.exec(src);
@@ -926,6 +932,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  /** @hot */
   link(src: string): Tokens.Link | Tokens.Image | undefined {
     // The link regex backtracks quadratically over unterminated-link inputs
     // like '[a](b'.repeat(n): at every '[' its greedy unquoted-href run
@@ -1009,6 +1016,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  /** @hot */
   reflink(src: string, links: Links): Tokens.Link | Tokens.Image | Tokens.Text | undefined {
     const first = src.charCodeAt(0);
     if (first !== 91 && first !== 33) return; // [ or !
@@ -1033,6 +1041,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  /** @hot */
   emStrong(src: string, maskedSrc: string, prevChar = ''): Tokens.Em | Tokens.Strong | undefined {
     let match = this.rules.inline.emStrongLDelim.exec(src);
     if (!match) return;
@@ -1148,6 +1157,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  /** @hot */
   codespan(src: string): Tokens.Codespan | undefined {
     if (src.charCodeAt(0) !== 96) return; // `
     const cap = this.rules.inline.code.exec(src);
@@ -1166,6 +1176,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  /** @hot */
   br(src: string): Tokens.Br | undefined {
     const first = src.charCodeAt(0);
     if (first !== 32 && first !== 92 && first !== 10) return; // space, \\ or newline (breaks)
@@ -1178,6 +1189,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  /** @hot */
   del(src: string, maskedSrc: string, prevChar = ''): Tokens.Del | undefined {
     if (src.charCodeAt(0) !== 126) return; // ~
     let match = this.rules.inline.delLDelim.exec(src);
@@ -1236,6 +1248,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  /** @hot */
   autolink(src: string): Tokens.Link | undefined {
     if (src.charCodeAt(0) !== 60) return; // <
     const cap = this.rules.inline.autolink.exec(src);
@@ -1266,6 +1279,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  /** @hot */
   url(src: string): Tokens.Link | undefined {
     let cap;
     if (cap = this.rules.inline.url.exec(src)) {
@@ -1304,6 +1318,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  /** @hot */
   inlineText(src: string): Tokens.Text | undefined {
     const cap = this.rules.inline.text.exec(src);
     if (cap) {

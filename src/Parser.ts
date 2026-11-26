@@ -24,6 +24,7 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
   /**
    * Static Parse Method
    */
+  /** @hot */
   static parse<ParserOutput = string, RendererOutput = string>(tokens: Token[], options?: MarkedOptions<ParserOutput, RendererOutput>) {
     const parser = new _Parser<ParserOutput, RendererOutput>(options);
     return parser.parse(tokens);
@@ -32,6 +33,7 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
   /**
    * Static Parse Inline Method
    */
+  /** @hot */
   static parseInline<ParserOutput = string, RendererOutput = string>(tokens: Token[], options?: MarkedOptions<ParserOutput, RendererOutput>) {
     const parser = new _Parser<ParserOutput, RendererOutput>(options);
     return parser.parseInline(tokens);
@@ -40,6 +42,7 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
   /**
    * Parse Loop
    */
+  /** @hot */
   parse(tokens: Token[]): ParserOutput {
     this.renderer.parser = this;
     let out = '';
@@ -128,6 +131,7 @@ export class _Parser<ParserOutput = string, RendererOutput = string> {
   /**
    * Parse Inline Tokens
    */
+  /** @hot */
   parseInline(tokens: Token[], renderer: _Renderer<ParserOutput, RendererOutput> | _TextRenderer<RendererOutput> = this.renderer): ParserOutput {
     this.renderer.parser = this;
     let out = '';

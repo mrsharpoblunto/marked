@@ -11,6 +11,7 @@ import type { _Parser } from './Parser.ts';
 // Literal code, escaped punctuation and autolinks must survive the later
 // alt-attribute escaping. Copy tokens so rendering the image cannot change
 // the token tree.
+/** @hotIgnore Visits the image token tree and copies tokens that need escaping. */
 function imageTextTokens(tokens: Token[], literal = false): Token[] {
   let copy: Token[] | undefined;
   for (let i = 0; i < tokens.length; i++) {
@@ -62,10 +63,12 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
     this.options = options || _defaults;
   }
 
+  /** @hot */
   space(token: Tokens.Space): RendererOutput {
     return '' as RendererOutput;
   }
 
+  /** @hot */
   code({ text, lang, escaped }: Tokens.Code): RendererOutput {
     const langString = (lang || '').match(other.notSpaceStart)?.[0];
 
@@ -85,27 +88,33 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
       + '</code></pre>\n' as RendererOutput;
   }
 
+  /** @hot */
   blockquote({ tokens }: Tokens.Blockquote): RendererOutput {
     const body = this.parser.parse(tokens);
     return `<blockquote>\n${body}</blockquote>\n` as RendererOutput;
   }
 
+  /** @hot */
   html({ text }: Tokens.HTML | Tokens.Tag): RendererOutput {
     return text as RendererOutput;
   }
 
+  /** @hot */
   def(token: Tokens.Def): RendererOutput {
     return '' as RendererOutput;
   }
 
+  /** @hot */
   heading({ tokens, depth }: Tokens.Heading): RendererOutput {
     return `<h${depth}>${this.parser.parseInline(tokens)}</h${depth}>\n` as RendererOutput;
   }
 
+  /** @hot */
   hr(token: Tokens.Hr): RendererOutput {
     return '<hr>\n' as RendererOutput;
   }
 
+  /** @hot */
   list(token: Tokens.List): RendererOutput {
     const ordered = token.ordered;
     const start = token.start;
@@ -121,20 +130,24 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
     return '<' + type + startAttr + '>\n' + body + '</' + type + '>\n' as RendererOutput;
   }
 
+  /** @hot */
   listitem(item: Tokens.ListItem): RendererOutput {
     return `<li>${this.parser.parse(item.tokens)}</li>\n` as RendererOutput;
   }
 
+  /** @hot */
   checkbox({ checked }: Tokens.Checkbox): RendererOutput {
     return '<input '
       + (checked ? 'checked="" ' : '')
       + 'disabled="" type="checkbox"> ' as RendererOutput;
   }
 
+  /** @hot */
   paragraph({ tokens }: Tokens.Paragraph): RendererOutput {
     return `<p>${this.parser.parseInline(tokens)}</p>\n` as RendererOutput;
   }
 
+  /** @hot */
   table(token: Tokens.Table): RendererOutput {
     let header = '';
 
@@ -166,10 +179,12 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
       + '</table>\n' as RendererOutput;
   }
 
+  /** @hot */
   tablerow({ text }: Tokens.TableRow<ParserOutput>): RendererOutput {
     return `<tr>\n${text}</tr>\n` as RendererOutput;
   }
 
+  /** @hot */
   tablecell(token: Tokens.TableCell): RendererOutput {
     const content = this.parser.parseInline(token.tokens);
     const type = token.header ? 'th' : 'td';
@@ -182,26 +197,32 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
   /**
    * span level renderer
    */
+  /** @hot */
   strong({ tokens }: Tokens.Strong): RendererOutput {
     return `<strong>${this.parser.parseInline(tokens)}</strong>` as RendererOutput;
   }
 
+  /** @hot */
   em({ tokens }: Tokens.Em): RendererOutput {
     return `<em>${this.parser.parseInline(tokens)}</em>` as RendererOutput;
   }
 
+  /** @hot */
   codespan({ text }: Tokens.Codespan): RendererOutput {
     return `<code>${escapeHtmlEntities(text, true)}</code>` as RendererOutput;
   }
 
+  /** @hot */
   br(token: Tokens.Br): RendererOutput {
     return '<br>' as RendererOutput;
   }
 
+  /** @hot */
   del({ tokens }: Tokens.Del): RendererOutput {
     return `<del>${this.parser.parseInline(tokens)}</del>` as RendererOutput;
   }
 
+  /** @hot */
   link({ href, title, text, tokens, autolink }: Tokens.Link): RendererOutput {
     // References are not resolved inside an autolink, so every `&` there is
     // literal. Elsewhere only an `&` that cannot start one needs escaping.
@@ -221,6 +242,7 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
     return out as RendererOutput;
   }
 
+  /** @hot */
   image({ href, title, text, tokens }: Tokens.Image): RendererOutput {
     if (tokens) {
       text = this.parser.parseInline(imageTextTokens(tokens), this.parser.textRenderer) as string;
@@ -239,6 +261,7 @@ export class _Renderer<ParserOutput = string, RendererOutput = string> {
     return out as RendererOutput;
   }
 
+  /** @hot */
   text(token: Tokens.Text | Tokens.Escape): RendererOutput {
     return 'tokens' in token && token.tokens
       ? this.parser.parseInline(token.tokens) as unknown as RendererOutput

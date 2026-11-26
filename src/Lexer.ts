@@ -85,6 +85,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   /**
    * Static Lex Method
    */
+  /** @hot */
   static lex<ParserOutput = string, RendererOutput = string>(src: string, options?: MarkedOptions<ParserOutput, RendererOutput>) {
     const lexer = new _Lexer<ParserOutput, RendererOutput>(options);
     return lexer.lex(src);
@@ -93,6 +94,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   /**
    * Static Lex Inline Method
    */
+  /** @hot */
   static lexInline<ParserOutput = string, RendererOutput = string>(src: string, options?: MarkedOptions<ParserOutput, RendererOutput>) {
     const lexer = new _Lexer<ParserOutput, RendererOutput>(options);
     return lexer.inlineTokens(src);
@@ -101,6 +103,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   /**
    * Preprocessing
    */
+  /** @hot */
   lex(src: string) {
     src = src.replace(other.carriageReturn, '\n');
 
@@ -337,6 +340,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    * Does this link text hold a link already? An image does not count: an image
    * may hold a link, a link may not.
    */
+  /** @hot */
   private linkInText(text: string): boolean {
     if (!text.includes('[')) {
       return false;
@@ -370,6 +374,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   /**
    * Lexing/Compiling
    */
+  /** @hot */
   inlineTokens(src: string, tokens: Token[] = []): Token[] {
     this.tokenizer.lexer = this;
     // One paren scan per inline run, shared with Tokenizer.link: without a
@@ -387,6 +392,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  /** @hot */
   #inlineTokensInner(src: string, tokens: Token[]): Token[] {
     // The masked source is only read by emStrong and del, which need a *, _ or
     // ~ to start. Skip building it for a run without one, unless a custom
@@ -415,6 +421,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     }
   }
 
+  /** @hot */
   #tokenizeInlines(src: string, maskedSrc: string, tokens: Token[]): Token[] {
     let keepPrevChar = false;
     let prevChar = '';
@@ -617,6 +624,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    * emphasis can open and close in it. A tag may also run past the first `>`,
    * as in `<a title=">">`, so mask the whole tag.
    */
+  /** @hot */
   #maskBlocks(src: string): string {
     const { blockSkip, tag, autolink } = this.tokenizer.rules.inline;
     let masked = '';
@@ -646,6 +654,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
    * Mask links, code, html and escapes so emStrong and del do not see their
    * delimiters inside them.
    */
+  /** @hot */
   #maskSrc(src: string): string {
     // String with links masked to avoid interference with em and strong
     let maskedSrc = src;
@@ -700,6 +709,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     return maskedSrc;
   }
 
+  /** @hotIgnore Only runs when tokenization fails to advance. */
   private infiniteLoopError(byte: number) {
     const errMsg = 'Infinite loop on byte: ' + byte;
     if (this.options.silent) {
