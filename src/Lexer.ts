@@ -137,6 +137,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   #replaced = 0;
   #defaultKinds: boolean;
   #closers = { star: -1, underscore: -1, tilde: -1 };
+  #blockMasks: number[] | undefined;
   #maskHook: ((src: string) => string) | undefined;
   #extensions: Pick<NonNullable<MarkedOptions['extensions']>, 'block' | 'inline' | 'startBlock' | 'startInline'> | null | undefined;
 
@@ -755,8 +756,8 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
   #maskBlocks(src: string): string {
     const { blockSkip, tag, autolink } = this.tokenizer.rules.inline;
     const cursor = this.tokenizer.rules.cursor?.inline;
-    let masked = '';
-    let last = 0;
+    let ranges = this.#blockMasks;
+    const fullMask = this.#maskHook || (this.#replaced & (tokenizerFlags.emStrong | tokenizerFlags.del));
     let match: RegExpExecArray | null;
     blockSkip.lastIndex = 0;
     while ((match = blockSkip.exec(src))) {
@@ -771,10 +772,23 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
         end = start + html[0].length;
         blockSkip.lastIndex = end;
       }
+      // The recognized blocks have punctuation at both ends. If there is
+      // no delimiter inside, the original span has the same flanking effect.
+      if (!fullMask && !hasInlineDelimiter(src, start, end)) continue;
+      if (!ranges) this.#blockMasks = ranges = [];
+      ranges.push(start, end);
+    }
+    if (!ranges?.length) return src;
+    let masked = '';
+    let last = 0;
+    for (let i = 0; i < ranges.length; i += 2) {
+      const start = ranges[i];
+      const end = ranges[i + 1];
       masked += src.slice(last, start) + '[' + 'a'.repeat(end - start - 2) + ']';
       last = end;
     }
-    return last === 0 ? src : masked + src.slice(last);
+    ranges.length = 0;
+    return masked + src.slice(last);
   }
 
   /**
@@ -855,4 +869,13 @@ function appendText(token: Tokens.Text | Tokens.Paragraph, raw: string, text: st
   }
   token.raw += raw;
   token.text += text;
+}
+
+/** @hot */
+function hasInlineDelimiter(source: string, start: number, end: number): boolean {
+  for (let i = start; i < end; i++) {
+    const code = source.charCodeAt(i);
+    if (code === 42 || code === 95 || code === 126) return true;
+  }
+  return false;
 }
