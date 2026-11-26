@@ -364,50 +364,46 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
   blockquote(src: string): Tokens.Blockquote | undefined {
     const cap = this.rules.block.blockquote.exec(src);
     if (cap) {
-      let lines = rtrim(cap[0], '\n').split('\n');
+      let remaining = rtrim(cap[0], '\n');
       let raw = '';
       let text = '';
       const tokens: Token[] = [];
 
-      while (lines.length > 0) {
+      while (remaining.length > 0) {
         let inBlockquote = false;
-        const currentLines = [];
+        let start = 0;
+        let end = 0;
 
-        let i;
-        for (i = 0; i < lines.length; i++) {
-          // get lines up to a continuation
-          if (this.rules.other.blockquoteStart.test(lines[i])) {
-            currentLines.push(lines[i]);
+        while (start <= remaining.length) {
+          const line = lineEnd(remaining, start);
+          if (this.rules.other.blockquoteStart.test(remaining.slice(start, line))) {
             inBlockquote = true;
-          } else if (!inBlockquote) {
-            currentLines.push(lines[i]);
-          } else {
+          } else if (inBlockquote) {
             break;
           }
+          end = line;
+          start = line + 1;
         }
-        lines = lines.slice(i);
 
-        const currentRaw = currentLines.join('\n');
-        // expandBlockquoteTabs needs the marker's column, which is unknown inside a list item
-        // or a block quote, where the outermost block quote has already expanded the markers
-        const expandColumns = this.lexer.state.top && !this.lexer.state.inBlockquote && currentRaw.includes('\t');
-        const currentText = (expandColumns ? expandBlockquoteTabs(currentLines) : currentRaw)
-          // a tab right after the block quote marker runs to the next tab stop, and
-          // the marker only consumes one space of it; the rest is content.
-          // After a space the marker consumes it whole, so later tabs stay literal.
-          .replace(
+        const currentRaw = end === remaining.length ? remaining : remaining.slice(0, end);
+        remaining = remaining.slice(end + 1);
+        // Only the outermost block quote knows the original tab columns.
+        let currentText = currentRaw;
+        if (currentRaw.includes('\t')) {
+          if (this.lexer.state.top && !this.lexer.state.inBlockquote) {
+            currentText = expandBlockquoteTabs(currentRaw.split('\n'));
+          }
+          currentText = currentText.replace(
             this.rules.other.blockquoteMarkerWhitespace,
             (_: string, marker: string, whitespace: string) => {
-              // The optional space after ">" is marker; anything after that is
-              // content (e.g. a tab that opens a fenced code line) and must not
-              // be expanded. Tabs with no leading space are structural and are
-              // expanded so indented code under the quote still works.
               if (whitespace.startsWith(' ')) {
                 return marker + ' ' + whitespace.slice(1);
               }
               return marker + expandTabs(whitespace, marker.length);
             },
-          )
+          );
+        }
+        currentText = currentText
           // precede setext continuation with 4 spaces so it isn't a setext
           .replace(this.rules.other.blockquoteSetextReplace, '\n    $1')
           .replace(this.rules.other.blockquoteSetextReplace2, '');
@@ -425,7 +421,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         this.lexer.state.inBlockquote = outerInBlockquote;
 
         // if there is no continuation then we are done
-        if (lines.length === 0) {
+        if (remaining.length === 0) {
           break;
         }
 
@@ -441,8 +437,8 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           // nested blockquote, which already had one '>' marker stripped, so
           // strip one marker from them too. Otherwise a restated marker after a
           // lazy line is re-parsed as a spurious deeper blockquote.
-          const continuation = lines.join('\n');
-          const newText = oldToken.raw + '\n' + continuation.replace(this.rules.other.blockquoteSetextReplace2, '');
+          const lines = remaining.split('\n');
+          const newText = oldToken.raw + '\n' + remaining.replace(this.rules.other.blockquoteSetextReplace2, '');
           this.lexer.state.inBlockquote = true;
           const newToken = this.blockquote(newText)!;
           this.lexer.state.inBlockquote = outerInBlockquote;
@@ -461,15 +457,16 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
           // A leftover line that starts with '>' still belongs to this
           // blockquote; any other leftover line ends it.
-          lines = lines.slice(consumed.length);
-          if (lines.length > 0 && this.rules.other.blockquoteStart.test(lines[0])) {
+          remaining = lines.slice(consumed.length).join('\n');
+          if (remaining.length > 0 && this.rules.other.blockquoteStart.test(remaining)) {
             continue;
           }
           break;
         } else if (lastToken?.type === 'list') {
           // include continuation in nested list
           const oldToken = lastToken as Tokens.List;
-          const newText = oldToken.raw + '\n' + lines.join('\n');
+          const lines = remaining.split('\n');
+          const newText = oldToken.raw + '\n' + remaining;
           const newToken = this.list(newText)!;
           tokens[tokens.length - 1] = newToken;
 
@@ -483,11 +480,11 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
             raw = `${raw}\n${consumed}`;
             text = `${text}\n${consumed}`;
           }
-          lines = lines.slice(consumedCount);
+          remaining = lines.slice(consumedCount).join('\n');
 
           // A lazy line the list did not take is not a paragraph continuation,
           // e.g. after an empty list item, so it ends the blockquote.
-          if (lines.length > 0 && !this.rules.other.blockquoteStart.test(lines[0])) {
+          if (remaining.length > 0 && !this.rules.other.blockquoteStart.test(remaining)) {
             break;
           }
           continue;
