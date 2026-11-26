@@ -4,11 +4,7 @@ import { emit } from './OutputBuffer.ts';
 import { escapeHtmlEntities } from './helpers.ts';
 import type { OutputBuffer } from './OutputBuffer.ts';
 
-export const enum TextMode {
-  Plain,
-  Image,
-  Literal,
-}
+export const TextMode = { Plain: 0, Image: 1, Literal: 2 } as const;
 
 /**
  * TextRenderer
@@ -17,7 +13,7 @@ export const enum TextMode {
 export class _TextRenderer<RendererOutput = string> {
   parser!: _Parser<unknown, RendererOutput>;
   /** @internal */
-  imageMode = TextMode.Plain;
+  imageMode: number = TextMode.Plain;
   strong({ text, tokens }: Tokens.Strong): RendererOutput;
   strong(token: Tokens.Strong): RendererOutput {
     const output = { html: '' };

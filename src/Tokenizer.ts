@@ -1,3 +1,4 @@
+import { createBlockquote, createBr, createCheckbox, createCode, createCodespan, createDef, createDel, createEm, createEscape, createHeading, createHr, createHtml, createImage, createLink, createList, createListItem, createParagraph, createSpace, createStrong, createTable, createTableCell, createText } from './tokenFactories.ts';
 import { _defaults } from './defaults.ts';
 import {
   withoutTrailingNewlines,
@@ -57,9 +58,8 @@ function unescapeLinkLabel(label: string, rules: Rules): string {
 }
 
 /** @hot */
-function outputLink(cap: string[], link: Pick<Tokens.Link, 'href' | 'title'>, raw: string, lexer: _Lexer, rules: Rules): Tokens.Link | Tokens.Image | undefined {
-  const href = link.href;
-  const title = link.title || null;
+function outputLink(cap: string[], href: string, linkTitle: string | null | undefined, raw: string, lexer: _Lexer, rules: Rules): Tokens.Link | Tokens.Image | undefined {
+  const title = linkTitle || null;
   const text = unescapeLinkLabel(cap[1], rules);
   const isImage = cap[0].charCodeAt(0) === 33;
 
@@ -86,14 +86,7 @@ function outputLink(cap: string[], link: Pick<Tokens.Link, 'href' | 'title'>, ra
     lexer.state.linkEmitted = true;
   }
 
-  return {
-    type: isImage ? 'image' : 'link',
-    raw,
-    href,
-    title,
-    text,
-    tokens,
-  };
+  return isImage ? createImage(raw, href, title, text, tokens) : createLink(raw, href, title, text, tokens, false);
 }
 
 function indentCodeCompensation(raw: string, text: string, rules: Rules, canExpandTabs: boolean) {
@@ -316,10 +309,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
     if (pos === src.length) end = pos;
     if (end !== offset) {
-      return {
-        type: 'space',
-        raw: sourceText(src, offset, end),
-      };
+      return createSpace(sourceText(src, offset, end));
     }
   }
 
@@ -335,12 +325,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         ? cap[0]
         : trimTrailingBlankLines(cap[0]);
       const text = raw.replace(this.rules.other.codeRemoveIndent, '');
-      return {
-        type: 'code',
-        raw,
-        codeBlockStyle: 'indented',
-        text,
-      };
+      return createCode(raw, text, undefined, true);
     }
   }
 
@@ -360,12 +345,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         text += '\n';
       }
 
-      return {
-        type: 'code',
-        raw,
-        lang: cap[2] ? cap[2].trim().replace(this.rules.inline.anyPunctuation, '$1') : cap[2],
-        text,
-      };
+      return createCode(raw, text, cap[2] ? cap[2].trim().replace(this.rules.inline.anyPunctuation, '$1') : cap[2], false);
     }
   }
 
@@ -387,13 +367,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       }
       const text = sourceText(cap[2], start, end);
 
-      return {
-        type: 'heading',
-        raw: withoutTrailingNewlines(cap[0]),
-        depth: cap[1].length,
-        text,
-        tokens: this.lexer.inline(text),
-      };
+      return createHeading(withoutTrailingNewlines(cap[0]), cap[1].length, text, this.lexer.inline(text));
     }
   }
 
@@ -420,10 +394,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       end++;
     }
     if (count >= 3 && (end === src.length || src.charCodeAt(end) === 10)) {
-      return {
-        type: 'hr',
-        raw: sourceText(src, offset, end),
-      };
+      return createHr(sourceText(src, offset, end));
     }
   }
 
@@ -576,12 +547,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         }
       }
 
-      return {
-        type: 'blockquote',
-        raw: sourceText(src, offset, rawEnd),
-        tokens,
-        text,
-      };
+      return createBlockquote(sourceText(src, offset, rawEnd), text, tokens);
     }
   }
 
@@ -621,14 +587,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         }
       }
 
-      const list: Tokens.List = {
-        type: 'list',
-        raw: '',
-        ordered: isordered,
-        start,
-        loose: false,
-        items: [],
-      };
+      const list: Tokens.List = createList('', isordered, start, false, []);
 
       let endsWithBlankLine = false;
       // Check if current bullet point can start a new List Item
@@ -818,14 +777,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           }
         }
 
-        list.items.push({
-          type: 'list_item',
-          raw,
-          task: !!this.options.gfm && this.rules.other.listIsTask.test(itemContents),
-          loose: false,
-          text: itemContents,
-          tokens: [],
-        });
+        list.items.push(createListItem(raw, !!this.options.gfm && this.rules.other.listIsTask.test(itemContents), false, itemContents, []));
       }
 
       // Do not consume trailing whitespace from the final item.
@@ -874,11 +826,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
           const taskRaw = this.rules.other.listTaskCheckbox.exec(item.raw);
           if (taskRaw) {
-            const checkboxToken: Tokens.Checkbox = {
-              type: 'checkbox',
-              raw: taskRaw[0] + ' ',
-              checked: taskRaw[0] !== '[ ]',
-            };
+            const checkboxToken: Tokens.Checkbox = createCheckbox(taskRaw[0] + ' ', taskRaw[0] !== '[ ]');
             item.checked = checkboxToken.checked;
             if (list.loose) {
               if (item.tokens[0] && ['paragraph', 'text'].includes(item.tokens[0].type) && 'tokens' in item.tokens[0] && item.tokens[0].tokens) {
@@ -886,12 +834,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
                 item.tokens[0].text = checkboxToken.raw + item.tokens[0].text;
                 item.tokens[0].tokens.unshift(checkboxToken);
               } else {
-                item.tokens.unshift({
-                  type: 'paragraph',
-                  raw: checkboxToken.raw,
-                  text: checkboxToken.raw,
-                  tokens: [checkboxToken],
-                });
+                item.tokens.unshift(createParagraph(checkboxToken.raw, checkboxToken.raw, [checkboxToken]));
               }
             } else {
               item.tokens.unshift(checkboxToken);
@@ -933,13 +876,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       }
 
       const raw = trimTrailingBlankLines(cap[0]);
-      const token: Tokens.HTML = {
-        type: 'html',
-        block: true,
-        raw,
-        pre: cap[1] === 'pre' || cap[1] === 'script' || cap[1] === 'style',
-        text: raw,
-      };
+      const token: Tokens.HTML = createHtml(raw, cap[1] === 'pre' || cap[1] === 'script' || cap[1] === 'style', undefined);
       return token;
     }
   }
@@ -960,13 +897,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       const tag = normalizeLabel(cap[1]);
       const href = cap[2] ? cap[2].replace(this.rules.other.hrefBrackets, '$1').replace(this.rules.inline.anyPunctuation, '$1') : '';
       const title = cap[3] ? cap[3].substring(1, cap[3].length - 1).replace(this.rules.inline.anyPunctuation, '$1') : cap[3];
-      return {
-        type: 'def',
-        tag,
-        raw: withoutTrailingNewlines(cap[0]),
-        href,
-        title,
-      };
+      return createDef(tag, withoutTrailingNewlines(cap[0]), href, title);
     }
   }
 
@@ -1002,13 +933,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     headers ??= splitCells(cap[1], 0, cap[1].length, 0);
     aligns ??= tableAlignments(cap[2]);
 
-    const item: Tokens.Table = {
-      type: 'table',
-      raw: withoutTrailingNewlines(cap[0]),
-      header: [],
-      align: aligns,
-      rows: [],
-    };
+    const item: Tokens.Table = createTable(withoutTrailingNewlines(cap[0]), [], aligns, []);
 
     if (headers.length !== aligns.length) {
       // header and align columns must be equal, rows can be different.
@@ -1016,12 +941,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
 
     for (let i = 0; i < headers.length; i++) {
-      item.header.push({
-        text: headers[i],
-        tokens: this.lexer.inline(headers[i]),
-        header: true,
-        align: item.align[i],
-      });
+      item.header.push(createTableCell(headers[i], this.lexer.inline(headers[i]), true, item.align[i]));
     }
 
     const body = cap[3];
@@ -1035,7 +955,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         const cells = splitCells(body, start, next, item.header.length);
         const row: Tokens.TableCell[] = [];
         for (let i = 0; i < cells.length; i++) {
-          row.push({ text: cells[i], tokens: this.lexer.inline(cells[i]), header: false, align: aligns[i] });
+          row.push(createTableCell(cells[i], this.lexer.inline(cells[i]), false, aligns[i]));
         }
         item.rows.push(row);
         start = next + 1;
@@ -1055,13 +975,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (cap) {
       const start = trimStartOffset(cap[1], 0, cap[1].length);
       const text = sourceText(cap[1], start, trimEndOffset(cap[1], start, cap[1].length));
-      return {
-        type: 'heading',
-        raw: withoutTrailingNewlines(cap[0]),
-        depth: cap[2].charAt(0) === '=' ? 1 : 2,
-        text,
-        tokens: this.lexer.inline(text),
-      };
+      return createHeading(withoutTrailingNewlines(cap[0]), cap[2].charAt(0) === '=' ? 1 : 2, text, this.lexer.inline(text));
     }
   }
 
@@ -1086,12 +1000,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         text = text.slice(0, -1);
       }
     }
-    return {
-      type: 'paragraph',
-      raw,
-      text,
-      tokens: this.lexer.inline(text),
-    };
+    return createParagraph(raw, text, this.lexer.inline(text));
   }
 
   text(src: string): Tokens.Text | undefined {
@@ -1111,12 +1020,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         raw += continuation[0];
         text += continuation[0].replace(this.rules.other.codeRemoveIndent, '');
       }
-      return {
-        type: 'text',
-        raw,
-        text,
-        tokens: this.lexer.inline(text),
-      };
+      return createText(raw, text, this.lexer.inline(text));
     }
   }
 
@@ -1130,11 +1034,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (src.charCodeAt(offset) !== 92) return; // \\
     const cap = execAt(this.rules.inline.escape, src, offset);
     if (cap) {
-      return {
-        type: 'escape',
-        raw: cap[0],
-        text: cap[1],
-      };
+      return createEscape(cap[0], cap[1]);
     }
   }
 
@@ -1159,14 +1059,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         this.lexer.state.inRawBlock = false;
       }
 
-      return {
-        type: 'html',
-        raw: cap[0],
-        inLink: this.lexer.state.inLink,
-        inRawBlock: this.lexer.state.inRawBlock,
-        block: false,
-        text: cap[0],
-      };
+      return createHtml(cap[0], this.lexer.state.inLink, this.lexer.state.inRawBlock);
     }
   }
 
@@ -1243,10 +1136,10 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         if (!this.options.pedantic || endsWithBracket) hrefEnd--;
       }
       href = sourceText(href, hrefStart, hrefEnd);
-      return outputLink(cap, {
-        href: href ? href.replace(this.rules.inline.anyPunctuation, '$1') : href,
-        title: title ? title.replace(this.rules.inline.anyPunctuation, '$1') : title,
-      }, cap[0], this.lexer, this.rules);
+      return outputLink(cap,
+        href ? href.replace(this.rules.inline.anyPunctuation, '$1') : href,
+        title ? title.replace(this.rules.inline.anyPunctuation, '$1') : title,
+        cap[0], this.lexer, this.rules);
     }
   }
 
@@ -1270,13 +1163,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       const link = links[normalizeLabel(cap[2] || cap[1])];
       if (!link) {
         const text = cap[0].charAt(0);
-        return {
-          type: 'text',
-          raw: text,
-          text,
-        };
+        return createText(text, text, undefined);
       }
-      return outputLink(cap, link, cap[0], this.lexer, this.rules);
+      return outputLink(cap, link.href, link.title, cap[0], this.lexer, this.rules);
     }
   }
 
@@ -1382,22 +1271,12 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         // Create `em` if smallest delimiter has odd char count. *a***
         if (Math.min(lLength, rLength) % 2) {
           const text = sourceText(src, offset + 1, rawEnd - 1);
-          return {
-            type: 'em',
-            raw,
-            text,
-            tokens: this.lexer.inlineTokens(text),
-          };
+          return createEm(raw, text, this.lexer.inlineTokens(text));
         }
 
         // Create 'strong' if smallest delimiter has even char count. **a***
         const text = sourceText(src, offset + 2, rawEnd - 2);
-        return {
-          type: 'strong',
-          raw,
-          text,
-          tokens: this.lexer.inlineTokens(text),
-        };
+        return createStrong(raw, text, this.lexer.inlineTokens(text));
       }
     }
   }
@@ -1429,11 +1308,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
       }
       const trimmed = sourceText(content, start, end);
       const text = trimmed.indexOf('\n') < 0 ? trimmed : trimmed.replace(this.rules.other.newLineCharGlobal, ' ');
-      return {
-        type: 'codespan',
-        raw: cap[0],
-        text,
-      };
+      return createCodespan(cap[0], text);
     }
   }
 
@@ -1448,10 +1323,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     if (first !== 32 && first !== 92 && first !== 10) return; // space, \\ or newline (breaks)
     const cap = execAt(this.rules.inline.br, src, offset);
     if (cap) {
-      return {
-        type: 'br',
-        raw: cap[0],
-      };
+      return createBr(cap[0]);
     }
   }
 
@@ -1509,12 +1381,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
 
         // Create del token - only single ~ or double ~~ supported
         const text = sourceText(src, offset + lLength, rawEnd - lLength);
-        return {
-          type: 'del',
-          raw,
-          text,
-          tokens: this.lexer.inlineTokens(text),
-        };
+        return createDel(raw, text, this.lexer.inlineTokens(text));
       }
     }
   }
@@ -1538,20 +1405,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
         href = text;
       }
 
-      return {
-        type: 'link',
-        raw: cap[0],
-        text,
-        href,
-        autolink: true,
-        tokens: [
-          {
-            type: 'text',
-            raw: text,
-            text,
-          },
-        ],
-      };
+      return createLink(cap[0], href, null, text, [
+        createText(text, text, undefined),
+      ], true);
     }
   }
 
@@ -1582,20 +1438,9 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
           href = cap[0];
         }
       }
-      return {
-        type: 'link',
-        raw: cap[0],
-        text,
-        href,
-        autolink: true,
-        tokens: [
-          {
-            type: 'text',
-            raw: text,
-            text,
-          },
-        ],
-      };
+      return createLink(cap[0], href, null, text, [
+        createText(text, text, undefined),
+      ], true);
     }
   }
 
@@ -1617,12 +1462,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
     }
     if (raw !== undefined) {
       const escaped = this.lexer.state.inRawBlock;
-      return {
-        type: 'text',
-        raw,
-        text: escaped ? raw : decodeNumericCharacterReferences(raw),
-        escaped,
-      };
+      return createText(raw, escaped ? raw : decodeNumericCharacterReferences(raw), escaped);
     }
   }
 }

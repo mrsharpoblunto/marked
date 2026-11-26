@@ -1,3 +1,4 @@
+import { createText } from './tokenFactories.ts';
 import { _Tokenizer } from './Tokenizer.ts';
 import { _defaults } from './defaults.ts';
 import { other, block, inline } from './rules.ts';
@@ -638,7 +639,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
             lastToken.raw += raw;
             lastToken.text += raw;
           } else {
-            tokens.push({ type: 'text', raw, text: raw, escaped: false } as Tokens.Text);
+            tokens.push(createText(raw, raw, false) as Tokens.Text);
           }
           offset = runEnd;
           prevChar = raw[0];
