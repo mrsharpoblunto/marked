@@ -1571,7 +1571,7 @@ export class _Tokenizer<ParserOutput = string, RendererOutput = string> {
               position = leftoverLine + 1;
             }
           }
-          text = text.slice(0, text.length - oldTextLength) + (checkpoint < 0 ? newToken.text : oldToken.text);
+          text = text.substring(0, text.length - oldTextLength) + (checkpoint < 0 ? newToken.text : oldToken.text);
 
           // A leftover quote line belongs to this blockquote.
           if (position < quoteEnd && quoteMarkerAt(src, position) >= 0) {
