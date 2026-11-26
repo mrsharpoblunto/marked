@@ -228,21 +228,21 @@ function scanLastPossibleEmStrongDelClosers(src: string): EmStrongDelCloserHintF
   let lastPossibleDelCloserIndex = -1;
   const len = src.length;
   for (let i = 0; i < len; i++) {
-    const ch = src[i];
-    if (ch !== '*' && ch !== '_' && ch !== '~') {
+    const ch = src.charCodeAt(i);
+    if (ch !== 42 && ch !== 95 && ch !== 126) {
       continue;
     }
     // A leading run has no predecessor, same as one after a line break.
-    const prev = i === 0 ? '\n' : src[i - 1];
+    const prev = i === 0 ? 10 : src.charCodeAt(i - 1);
     let j = i + 1;
-    while (j < len && src[j] === ch) {
+    while (j < len && src.charCodeAt(j) === ch) {
       j++;
     }
-    if (prev !== ' ' && prev !== '\t' && prev !== '\n' && prev !== '\r' && prev !== '\f') {
-      if (ch === '~') {
+    if (prev !== 32 && prev !== 9 && prev !== 10 && prev !== 13 && prev !== 12) {
+      if (ch === 126) {
         lastPossibleDelCloserIndex = i;
       } else {
-        lastPossibleEmStrongCloserIndex[ch] = i;
+        lastPossibleEmStrongCloserIndex[ch === 42 ? '*' : '_'] = i;
       }
     }
     i = j - 1;
