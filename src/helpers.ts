@@ -2,8 +2,13 @@ import type { BlockSource } from './BlockLine.ts';
 import { block, inline, noopTest, other } from './rules.ts';
 
 /** @hotIgnore Output: at most one string for each token field. */
-export function sourceText(src: BlockSource, start: number, end: number): string {
-  return typeof src === 'string' && start === 0 && end === src.length ? src : src.slice(start, end);
+export function sourceText(src: string, start: number, end: number): string {
+  return start === 0 && end === src.length ? src : src.slice(start, end);
+}
+
+/** @hot */
+export function blockSourceText(src: BlockSource, start: number, end: number): string {
+  return typeof src === 'string' ? sourceText(src, start, end) : src.slice(start, end);
 }
 
 /** @hot */
@@ -126,14 +131,18 @@ function execUserRule(rule: RegExp, src: BlockSource, offset: number): RegExpExe
 }
 
 /** @hot */
-export function execAt(rule: RegExp, src: BlockSource, offset: number, prepared: CursorRule | undefined): RegExpExecArray | null {
-  if (typeof src !== 'string') return execUserRule(rule, src, offset);
+export function execAt(rule: RegExp, src: string, offset: number, prepared: CursorRule | undefined): RegExpExecArray | null {
   if (offset === 0) return rule.exec(src);
   if (prepared?.original !== rule) return execUserRule(rule, src, offset);
   const sticky = prepared.sticky;
   if (!sticky) return null;
   sticky.lastIndex = offset;
   return sticky.exec(src);
+}
+
+/** @hot */
+export function execBlockRule(rule: RegExp, src: BlockSource, offset: number, prepared: CursorRule | undefined): RegExpExecArray | null {
+  return typeof src === 'string' ? execAt(rule, src, offset, prepared) : execUserRule(rule, src, offset);
 }
 
 /** @hotIgnore User adapter: one character string per custom rule test. */
@@ -242,7 +251,7 @@ export function splitCells(tableRow: BlockSource, rowStart: number, rowEnd: numb
       const left = trimStartOffset(tableRow, start, i);
       const right = trimEndOffset(tableRow, left, i);
       if (left < right || (start !== rowStart && !atEnd)) {
-        const cell = sourceText(tableRow, left, right);
+        const cell = blockSourceText(tableRow, left, right);
         cells.push(escapedPipe ? cell.replace(other.slashPipe, '|') : cell);
         if (count && cells.length === count) return cells;
       }
@@ -290,7 +299,7 @@ export function trimTrailingBlankLines(str: string) {
  * keeps the folded label lower case, the form `def.tag` has always used.
  */
 /** @hot */
-export function normalizeLabel(label: BlockSource, first = 0, last = label.length): string {
+export function normalizeLabel(label: string, first = 0, last = label.length): string {
   const start = trimStartOffset(label, first, last);
   const end = trimEndOffset(label, start, last);
   let needsRewrite = false;

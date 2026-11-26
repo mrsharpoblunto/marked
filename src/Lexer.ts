@@ -5,7 +5,7 @@ import { _Tokenizer } from './Tokenizer.ts';
 import { _defaults } from './defaults.ts';
 import { other, block, inline, type Rules } from './rules.ts';
 import { callMaskHook, hookSlots } from './HookDispatch.ts';
-import { execAt, normalizeLabel, preparedLexerRules, scanCloserHints, sourceText } from './helpers.ts';
+import { blockSourceText, execAt, normalizeLabel, preparedLexerRules, scanCloserHints, sourceText } from './helpers.ts';
 import type { CloserHints } from './helpers.ts';
 import type { Token, TokensList, Tokens } from './Tokens.ts';
 import type { MarkedOptions } from './MarkedOptions.ts';
@@ -275,7 +275,7 @@ export class _Lexer<ParserOutput = string, RendererOutput = string> {
     // restore the outer last token when it returns
     const outerLastToken = this.state.lastToken;
     if (this.options.pedantic) {
-      src = sourceText(src, 0, src.length).replace(other.tabCharGlobal, '    ').replace(other.spaceLine, '');
+      src = blockSourceText(src, 0, src.length).replace(other.tabCharGlobal, '    ').replace(other.spaceLine, '');
     }
 
     let offset = 0;

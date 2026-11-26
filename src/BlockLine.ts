@@ -1,5 +1,9 @@
 /** @hot */
 export function blockLineEnd(src: BlockSource, start: number): number {
+  if (typeof src !== 'string') {
+    const end = src.indexOf('\n', start);
+    return end < 0 ? src.length : end;
+  }
   let end = start;
   while (end < src.length && src.charCodeAt(end) !== 10) end++;
   return end;
@@ -53,13 +57,30 @@ export class BlockLineView {
   length = 0;
   #rows: number[] = [];
   #row = 0;
+  #start = 0;
+  #end = -1;
+  #content = 0;
+  #physical = 0;
+  #original: string;
 
-  constructor(private readonly source: BlockSource) {}
+  constructor(private readonly source: BlockSource) {
+    this.#original = typeof source === 'string' ? source : source.#original;
+  }
 
   append(start: number, end: number, padding: number) {
     const offset = this.length + (this.#rows.length ? 1 : 0);
-    this.#rows.push(offset, start, end, padding);
     this.length = offset + padding + end - start;
+    const parent = this.source;
+    if (typeof parent !== 'string' && end > start) {
+      parent.#find(start);
+      const content = parent.#content;
+      const padded = Math.max(0, Math.min(end, content) - start);
+      const first = Math.max(0, start - content);
+      end = parent.#physical + first + (end - start - padded);
+      start = parent.#physical + first;
+      padding += padded;
+    }
+    this.#rows.push(offset, start, end, padding);
   }
 
   /** @hot */
@@ -69,18 +90,20 @@ export class BlockLineView {
     while (row > 0 && rows[row] > offset) row -= 4;
     while (row + 4 < rows.length && rows[row + 4] <= offset) row += 4;
     this.#row = row;
+    this.#start = rows[row];
+    this.#physical = rows[row + 1];
+    this.#content = this.#start + rows[row + 3];
+    this.#end = this.#content + rows[row + 2] - this.#physical;
     return row;
   }
 
   /** @hot */
   charCodeAt(offset: number): number {
     if (offset < 0 || offset >= this.length) return NaN;
-    const row = this.#find(offset);
-    const rows = this.#rows;
-    const content = offset - rows[row] - rows[row + 3];
-    if (content < 0) return 32;
-    const physical = rows[row + 1] + content;
-    return physical < rows[row + 2] ? this.source.charCodeAt(physical) : 10;
+    if (offset < this.#start || offset > this.#end) this.#find(offset);
+    if (offset < this.#content) return 32;
+    if (offset === this.#end) return 10;
+    return this.#original.charCodeAt(this.#physical + offset - this.#content);
   }
 
   /** @hot */
@@ -122,7 +145,7 @@ export class BlockLineView {
       const from = rows[row + 1] + pos - content;
       const through = Math.min(rows[row + 2], from + limit - pos);
       if (from < through) {
-        text += this.source.slice(from, through);
+        text += this.#original.slice(from, through);
         pos += through - from;
       }
       if (pos < limit) {
